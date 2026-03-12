@@ -13,48 +13,45 @@ def parse_word_to_json(mht_path):
     abs_path = os.path.abspath(mht_path)
     doc = word.Documents.Open(abs_path, ReadOnly=True, Visible=False)
     
-    # 전체 텍스트 로드
     full_text = doc.Content.Text
     elements = []
     table_ranges = []
 
-    # 1. 테이블 파싱 및 범위 기록
+    # 1. 테이블 파싱 (구분자 치환 전략으로 내부 개행 보존)
     for table in doc.Tables:
         start = table.Range.Start
         end = table.Range.End
         table_ranges.append((start, end))
         
-        raw_table_text = table.Range.Text
-        # 테이블의 마지막 행/셀 종료 문자(\r\x07)만 제거
-        if raw_table_text.endswith('\r\x07'):
-            raw_table_text = raw_table_text[:-2]
+        raw_text = table.Range.Text
         
-        # 행 단위 분리 (\r\x07 기준)
-        rows_raw = raw_table_text.split('\r\x07')
+        # [핵심] 행/셀 구분자를 임시 문자열로 치환하여 내부 개행과 분리
+        # Word 테이블 구분자 순서: 셀 종료(\x07), 행 종료(\r\x07)
+        temp_text = raw_text.replace('\r\x07', '||ROW||').replace('\x07', '||CELL||')
+        
+        # 이제 셀 내부에 남은 모든 종류의 개행(\r, \x0b, \n)을 <br>로 변환
+        temp_text = temp_text.replace('\r', '<br>').replace('\x0b', '<br>').replace('\n', '<br>')
+        
+        # 다시 행과 셀 단위로 분리
+        rows_raw = temp_text.split('||ROW||')
         
         table_md = []
         for i, row_raw in enumerate(rows_raw):
-            # 셀 단위 분리 (\x07 기준)
-            cells_raw = row_raw.split('\x07')
-            # 행 끝의 빈 요소 제거 (Word 테이블 구조상 항상 마지막 셀 뒤에 하나가 생김)
+            cells_raw = row_raw.split('||CELL||')
+            # 마지막 빈 요소 제거
             if cells_raw and not cells_raw[-1]:
                 cells_raw.pop()
             
+            if not cells_raw: continue
+            
             clean_cells = []
             for cell in cells_raw:
-                # 1) 셀 제어 문자(\x07) 제거
-                c = cell.replace('\x07', '')
-                # 2) 마크다운 파이프 기호 이스케이프
-                c = c.replace('|', r'\|')
-                # 3) 개행 및 소프트 개행을 <br>로 변환
-                c = c.replace('\x0b', '<br>').replace('\r', '<br>')
-                # 4) 양 끝의 가로 공백만 제거 (개행은 유지)
-                c = c.strip(' ')
-                # 5) 연속된 <br> 및 마지막 <br> 정리
+                # 마크다운 파이프 기호 이스케이프 및 정제
+                c = cell.replace('|', r'\|').strip(' ')
+                # 연속된 <br> 및 마지막 <br> 정리
                 c = re.sub(r'(<br>)+$', '', c)
                 clean_cells.append(c)
             
-            if not clean_cells: continue
             table_md.append(f"| {' | '.join(clean_cells)} |")
             if i == 0:
                 table_md.append(f"| {' | '.join(['---'] * len(clean_cells))} |")
@@ -65,7 +62,7 @@ def parse_word_to_json(mht_path):
             "content": "\n".join(table_md)
         })
 
-    # 2. 메타데이터 추출 (문서 초반 3000자 내외에서 검색)
+    # 2. 메타데이터 추출 (초반 3000자 내외)
     metadata = {"title": "N/A", "period": "N/A", "participants": "N/A"}
     top_text = full_text[:3000]
     
@@ -78,7 +75,7 @@ def parse_word_to_json(mht_path):
     participants_match = re.search(r'참석자.*?\s*:\s*([^\r\n]*)', top_text)
     if participants_match: metadata["participants"] = participants_match.group(1).strip()
 
-    # 3. 표 영역을 제외한 나머지 영역에서만 문단 파싱 진행
+    # 3. 표 영역 제외 문단 파싱
     date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)')
     sender_pattern = re.compile(r'^([^\r\n]+)\s*\[(\d{2}:\d{2})\]:')
 
@@ -92,7 +89,6 @@ def parse_word_to_json(mht_path):
             p_strip = p_text.replace('\x07', '').strip()
             
             if p_strip:
-                # 메타데이터 라인 스킵
                 is_meta = any(p_strip.startswith(x) for x in ["제목 :", "기간 :"]) or "참석자" in p_strip[:10]
                 if not is_meta:
                     date_m = date_pattern.match(p_strip)
@@ -111,13 +107,11 @@ def parse_word_to_json(mht_path):
                         elements.append({"start": current_offset, "type": "content", "content": p_strip.replace('\x0b', '\n')})
             current_offset += p_len
 
-    # 표와 표 사이 구간 파싱
     for t_start, t_end in table_ranges:
         if t_start > last_pos:
             process_segment(full_text[last_pos:t_start], last_pos)
         last_pos = t_end
     
-    # 마지막 표 이후 구간 파싱
     if last_pos < len(full_text):
         process_segment(full_text[last_pos:], last_pos)
 
@@ -137,7 +131,6 @@ def parse_word_to_json(mht_path):
             current_time = e["time"]
         elif e["type"] == "content":
             if current_sender != "N/A":
-                # 최종 내용 정제
                 clean_content = e["content"].replace('\x07', '').strip(' ')
                 if clean_content:
                     structured_messages.append({
@@ -161,7 +154,7 @@ if __name__ == "__main__":
     if os.path.exists(input_file):
         import time
         start_time = time.time()
-        print(f"고속 정밀 파싱 시작: {input_file}")
+        print(f"고속 정밀 파싱 시작 (개행 보존 모드): {input_file}")
         
         data = parse_word_to_json(input_file)
         
