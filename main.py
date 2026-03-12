@@ -8,80 +8,102 @@ def parse_word_to_json(mht_path):
     word = win32.gencache.EnsureDispatch('Word.Application')
     word.Visible = False
     word.DisplayAlerts = 0
+    word.ScreenUpdating = False # 성능 향상을 위해 화면 업데이트 중지
     
     abs_path = os.path.abspath(mht_path)
     doc = word.Documents.Open(abs_path, ReadOnly=True, Visible=False)
     
+    # [최적화 1] 전체 텍스트를 한 번의 COM 호출로 가져옴
+    full_text = doc.Content.Text
+    
     elements = []
-    metadata = {"title": "N/A", "period": "N/A", "participants": "N/A"}
-
-    # 1. 모든 표 가져오기
     table_ranges = []
+
+    # [최적화 2] 테이블 벌크 파싱 (열 보존 로직 강화)
     for table in doc.Tables:
         start = table.Range.Start
         end = table.Range.End
         table_ranges.append((start, end))
         
+        # Cell(r,c) 순회 대신 전체 텍스트 파싱
+        raw_table_text = table.Range.Text
+        # Word 테이블 구분자: 행(\r\x07), 셀(\x07)
+        rows_raw = raw_table_text.strip('\r\x07').split('\r\x07')
+        
         table_md = []
-        for r in range(1, table.Rows.Count + 1):
-            row_data = []
-            for c in range(1, table.Columns.Count + 1):
-                try:
-                    cell_text = table.Cell(r, c).Range.Text
-                    clean_text = cell_text.replace('\x07', '').replace('\r', '<br>').replace('\x0b', '<br>')
-                    clean_text = clean_text.replace('|', r'\|').strip()
-                    clean_text = re.sub(r'(<br>)+$', '', clean_text)
-                    row_data.append(clean_text)
-                except:
-                    row_data.append("") 
-            table_md.append(f"| {' | '.join(row_data)} |")
-            if r == 1:
-                table_md.append(f"| {' | '.join(['---'] * len(row_data))} |")
+        for i, row_raw in enumerate(rows_raw):
+            cells_raw = row_raw.split('\x07')
+            if cells_raw and not cells_raw[-1]:
+                cells_raw.pop() # 행 끝의 불필요한 빈 요소 제거
+            
+            clean_cells = []
+            for cell in cells_raw:
+                c = cell.replace('|', r'\|').replace('\x0b', '<br>').replace('\r', '<br>').strip()
+                c = re.sub(r'(<br>)+$', '', c)
+                clean_cells.append(c)
+            
+            if not clean_cells: continue
+            table_md.append(f"| {' | '.join(clean_cells)} |")
+            if i == 0:
+                table_md.append(f"| {' | '.join(['---'] * len(clean_cells))} |")
         
-        formatted_table = "\n".join(table_md)
-        elements.append({"start": start, "type": "content", "content": formatted_table})
+        elements.append({
+            "start": start, 
+            "type": "content", 
+            "content": "\n".join(table_md)
+        })
 
-    # 2. 정규표현식 정의
-    # 날짜 패턴: 요일까지만 추출 (예: 2026년 3월 11일 수요일)
-    date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)')
-    # 발신자 패턴: 이름/직책/그룹/회사 [09:16]:
-    sender_pattern = re.compile(r'^(.*)\s*\[(\d{2}:\d{2})\]:$')
+    # [최적화 3] 정규표현식을 이용한 고속 메타데이터 및 패턴 추출
+    metadata = {"title": "N/A", "period": "N/A", "participants": "N/A"}
+    
+    # 메타데이터 추출
+    title_match = re.search(r'제목\s*:\s*(.*)', full_text)
+    if title_match: metadata["title"] = title_match.group(1).strip()
+    
+    period_match = re.search(r'기간\s*:\s*(.*)', full_text)
+    if period_match: metadata["period"] = period_match.group(1).strip()
+    
+    participants_match = re.search(r'참석자.*?\s*:\s*(.*)', full_text)
+    if participants_match: metadata["participants"] = participants_match.group(1).strip()
 
-    # 3. 모든 문단 분류
-    for para in doc.Paragraphs:
-        p_start = para.Range.Start
-        text = para.Range.Text.strip()
-        if not text: continue
+    # 날짜 및 발신자 패턴 정의
+    date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)', re.MULTILINE)
+    sender_pattern = re.compile(r'^([^\r\n]+)\s*\[(\d{2}:\d{2})\]:', re.MULTILINE)
+
+    # 문단 단위 분리 및 분류 (COM 호출 없이 full_text 기반)
+    current_pos = 0
+    # \r 은 Word에서 문단 구분자임
+    for p_text in full_text.split('\r'):
+        p_len = len(p_text) + 1 # \r 길이 포함
+        p_strip = p_text.strip()
         
-        # 메타데이터 추출
-        if text.startswith("제목 :") and metadata["title"] == "N/A":
-            metadata["title"] = text.replace("제목 :", "").strip()
-            continue
-        elif text.startswith("기간 :") and metadata["period"] == "N/A":
-            metadata["period"] = text.replace("기간 :", "").strip()
-            continue
-        elif "참석자" in text and ":" in text and metadata["participants"] == "N/A":
-            metadata["participants"] = text.split(":", 1)[1].strip()
-            continue
+        if p_strip:
+            # 해당 위치가 테이블 내부인지 확인
+            is_inside_table = any(s <= current_pos < e for s, e in table_ranges)
+            
+            if not is_inside_table:
+                # 메타데이터 줄은 무시 (이미 추출함)
+                is_meta = any(p_strip.startswith(x) for x in ["제목 :", "기간 :"]) or "참석자" in p_strip[:10]
+                
+                if not is_meta:
+                    date_m = date_pattern.match(p_strip)
+                    sender_m = sender_pattern.match(p_strip)
+                    
+                    if date_m:
+                        elements.append({"start": current_pos, "type": "date", "content": date_m.group(1)})
+                    elif sender_m:
+                        elements.append({
+                            "start": current_pos, 
+                            "type": "sender_info", 
+                            "sender": sender_m.group(1).strip(),
+                            "time": sender_m.group(2).strip()
+                        })
+                    else:
+                        elements.append({"start": current_pos, "type": "content", "content": p_strip.replace('\x0b', '\n')})
+        
+        current_pos += p_len
 
-        is_inside_table = any(start <= p_start < end for start, end in table_ranges)
-        if not is_inside_table:
-            date_match = date_pattern.match(text)
-            if date_match:
-                # 매칭된 그룹(요일까지)만 저장
-                elements.append({"start": p_start, "type": "date", "content": date_match.group(1)})
-            elif sender_pattern.match(text):
-                match = sender_pattern.match(text)
-                elements.append({
-                    "start": p_start, 
-                    "type": "sender_info", 
-                    "sender": match.group(1).strip(),
-                    "time": match.group(2).strip()
-                })
-            else:
-                elements.append({"start": p_start, "type": "content", "content": text.replace('\x0b', '\n')})
-
-    # 4. 정렬 및 메시지 구조화
+    # 4. 정렬 및 구조화
     elements.sort(key=lambda x: x["start"])
     
     structured_messages = []
@@ -105,6 +127,7 @@ def parse_word_to_json(mht_path):
                 })
 
     doc.Close(False)
+    word.ScreenUpdating = True
     word.Quit()
     
     return {
@@ -112,19 +135,21 @@ def parse_word_to_json(mht_path):
         "messages": structured_messages
     }
 
-# 실행
 if __name__ == "__main__":
     input_file = "your_file.mht"
     if os.path.exists(input_file):
-        print(f"JSON 구조화 파싱 시작 (날짜 정제): {input_file}")
+        import time
+        start_time = time.time()
+        print(f"고속 파싱 시작: {input_file}")
+        
         data = parse_word_to_json(input_file)
         
-        output_filename = "messenger_backup.json"
-        with open(output_filename, "w", encoding="utf-8") as f:
+        with open("messenger_backup.json", "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
             
+        elapsed = time.time() - start_time
         print("-" * 30)
-        print(f"파싱 완료! 메시지 수: {len(data['messages'])}")
-        print(f"결과 저장: {output_filename}")
+        print(f"파싱 완료! (소요 시간: {elapsed:.2f}초)")
+        print(f"메시지 수: {len(data['messages'])}")
     else:
         print(f"파일을 찾을 수 없습니다: {input_file}")
