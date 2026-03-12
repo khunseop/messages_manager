@@ -3,64 +3,86 @@ import os
 import html
 import re
 
-def parse_word_keeping_order(mht_path):
-    word = win32.gencache.EnsureDispatch('Word.Application')
-    word.Visible = False
-    
-    abs_path = os.path.abspath(mht_path)
-    doc = word.Documents.Open(abs_path, ReadOnly=True)
-    
-    elements = []
+class MessengerParser:
+    def __init__(self):
+        self.word = None
 
-    # 1. 모든 문단 가져오기 (표 안에 있는 문단은 일단 제외)
-    for para in doc.Paragraphs:
-        if not para.Range.Information(12):  # 12 = wdWithinTable (표 밖인 경우만)
-            text = para.Range.Text.strip()
-            if text:
-                # (시작 위치, 유형, 내용) 저장
-                elements.append((para.Range.Start, "text", text))
+    def _ensure_word(self):
+        if self.word is None:
+            self.word = win32.gencache.EnsureDispatch('Word.Application')
+            self.word.Visible = False
+            self.word.DisplayAlerts = 0 # wdAlertsNone
 
-    # 2. 모든 표 가져오기
-    for table in doc.Tables:
-        table_md = []
-        for r in range(1, table.Rows.Count + 1):
-            row_data = []
-            for c in range(1, table.Columns.Count + 1):
-                try:
-                    cell_text = table.Cell(r, c).Range.Text
-                    clean_text = cell_text.replace('\r', '').replace('\x07', '').strip()
-                    row_data.append(clean_text)
-                except:
-                    row_data.append("") 
-            
-            table_md.append(f"| {' | '.join(row_data)} |")
-            if r == 1:
-                table_md.append(f"| {' | '.join(['---'] * len(row_data))} |")
+    def parse_mht(self, mht_path):
+        self._ensure_word()
+        abs_path = os.path.abspath(mht_path)
+        doc = self.word.Documents.Open(abs_path, ReadOnly=True, Visible=False)
         
-        formatted_table = "\n" + "\n".join(table_md) + "\n"
-        # (시작 위치, 유형, 내용) 저장
-        elements.append((table.Range.Start, "table", formatted_table))
+        elements = []
 
-    # 3. 문서 내 위치(Start 인덱스) 기준으로 정렬 (핵심!)
-    elements.sort(key=lambda x: x[0])
+        # 1. 표 정보 미리 추출 (범위 파악 및 데이터 벌크 로드)
+        # table.Range.Text는 셀 구분자로 \x07을 사용함
+        table_ranges = []
+        for table in doc.Tables:
+            start = table.Range.Start
+            end = table.Range.End
+            table_ranges.append((start, end))
+            
+            # 셀 단위 접근 대신 전체 텍스트를 가져와서 파싱 (속도 핵심)
+            raw_text = table.Range.Text
+            # Word 표 텍스트 특성: 셀 끝은 \x07, 행 끝은 \r\x07
+            rows = raw_text.strip('\r\x07').split('\r\x07')
+            
+            table_md = []
+            for i, row in enumerate(rows):
+                # 셀 분리 및 특수문자 제거
+                cells = [c.replace('\x07', '').replace('\r', '').strip() for c in row.split('\x07') if c]
+                if not cells: continue
+                
+                table_md.append(f"| {' | '.join(cells)} |")
+                if i == 0: # 헤더 구분선
+                    table_md.append(f"| {' | '.join(['---'] * len(cells))} |")
+            
+            formatted_table = "\n" + "\n".join(table_md) + "\n"
+            elements.append((start, "table", formatted_table))
 
-    # 4. 정렬된 순서대로 합치기 및 정제
-    final_list = [item[2] for item in elements]
-    final_content = "\n\n".join(final_list)
-    
-    # HTML 엔티티 변환 (&apos; 등 처리)
-    final_content = html.unescape(final_content)
-    
-    # 중복 개행 정리
-    final_content = re.sub(r'\n{3,}', '\n\n', final_content)
+        # 2. 문단 추출 (표 안에 없는 것만)
+        # 모든 문단을 순회하되, 이미 표 범위에 포함된 Start 지점은 건너뜀
+        for para in doc.Paragraphs:
+            p_start = para.Range.Start
+            
+            # 표 내부에 있는지 확인 (COM 호출 대신 미리 계산한 범위로 체크)
+            is_inside_table = any(start <= p_start < end for start, end in table_ranges)
+            
+            if not is_inside_table:
+                text = para.Range.Text.strip()
+                if text:
+                    elements.append((p_start, "text", text))
 
-    doc.Close(False)
-    word.Quit()
-    
-    return final_content
+        # 3. 정렬 및 병합
+        elements.sort(key=lambda x: x[0])
+        final_content = "\n\n".join([item[2] for item in elements])
+        
+        # 후처리
+        final_content = html.unescape(final_content)
+        final_content = re.sub(r'\n{3,}', '\n\n', final_content)
 
-# 실행
-result = parse_word_keeping_order("your_file.mht")
-with open("ordered_messenger_backup.md", "w", encoding="utf-8") as f:
-    f.write(result)
+        doc.Close(False)
+        return final_content
+
+    def quit(self):
+        if self.word:
+            self.word.Quit()
+            self.word = None
+
+# 실행 예시
+if __name__ == "__main__":
+    parser = MessengerParser()
+    try:
+        # 단일 파일 처리 (나중에 loop로 확장 가능)
+        result = parser.parse_mht("your_file.mht")
+        with open("ordered_messenger_backup.md", "w", encoding="utf-8") as f:
+            f.write(result)
+    finally:
+        parser.quit()
 
