@@ -25,17 +25,32 @@ def parse_word_to_json(mht_path):
         table_ranges.append((start, end))
         
         raw_table_text = table.Range.Text
-        rows_raw = raw_table_text.strip('\r\x07').split('\r\x07')
+        # 테이블의 마지막 행/셀 종료 문자(\r\x07)만 제거
+        if raw_table_text.endswith('\r\x07'):
+            raw_table_text = raw_table_text[:-2]
+        
+        # 행 단위 분리 (\r\x07 기준)
+        rows_raw = raw_table_text.split('\r\x07')
         
         table_md = []
         for i, row_raw in enumerate(rows_raw):
+            # 셀 단위 분리 (\x07 기준)
             cells_raw = row_raw.split('\x07')
+            # 행 끝의 빈 요소 제거 (Word 테이블 구조상 항상 마지막 셀 뒤에 하나가 생김)
             if cells_raw and not cells_raw[-1]:
                 cells_raw.pop()
             
             clean_cells = []
             for cell in cells_raw:
-                c = cell.replace('\x07', '').replace('|', r'\|').replace('\x0b', '<br>').replace('\r', '<br>').strip()
+                # 1) 셀 제어 문자(\x07) 제거
+                c = cell.replace('\x07', '')
+                # 2) 마크다운 파이프 기호 이스케이프
+                c = c.replace('|', r'\|')
+                # 3) 개행 및 소프트 개행을 <br>로 변환
+                c = c.replace('\x0b', '<br>').replace('\r', '<br>')
+                # 4) 양 끝의 가로 공백만 제거 (개행은 유지)
+                c = c.strip(' ')
+                # 5) 연속된 <br> 및 마지막 <br> 정리
                 c = re.sub(r'(<br>)+$', '', c)
                 clean_cells.append(c)
             
@@ -50,9 +65,9 @@ def parse_word_to_json(mht_path):
             "content": "\n".join(table_md)
         })
 
-    # 2. 메타데이터 추출 (초반 2000자 내외에서만 검색)
+    # 2. 메타데이터 추출 (문서 초반 3000자 내외에서 검색)
     metadata = {"title": "N/A", "period": "N/A", "participants": "N/A"}
-    top_text = full_text[:2000]
+    top_text = full_text[:3000]
     
     title_match = re.search(r'제목\s*:\s*([^\r\n]*)', top_text)
     if title_match: metadata["title"] = title_match.group(1).strip()
@@ -67,7 +82,6 @@ def parse_word_to_json(mht_path):
     date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)')
     sender_pattern = re.compile(r'^([^\r\n]+)\s*\[(\d{2}:\d{2})\]:')
 
-    # 표 범위를 기준으로 텍스트 세그먼트 분리
     table_ranges.sort()
     last_pos = 0
 
@@ -78,6 +92,7 @@ def parse_word_to_json(mht_path):
             p_strip = p_text.replace('\x07', '').strip()
             
             if p_strip:
+                # 메타데이터 라인 스킵
                 is_meta = any(p_strip.startswith(x) for x in ["제목 :", "기간 :"]) or "참석자" in p_strip[:10]
                 if not is_meta:
                     date_m = date_pattern.match(p_strip)
@@ -122,7 +137,8 @@ def parse_word_to_json(mht_path):
             current_time = e["time"]
         elif e["type"] == "content":
             if current_sender != "N/A":
-                clean_content = e["content"].replace('\x07', '').strip()
+                # 최종 내용 정제
+                clean_content = e["content"].replace('\x07', '').strip(' ')
                 if clean_content:
                     structured_messages.append({
                         "date": current_date,
@@ -145,7 +161,7 @@ if __name__ == "__main__":
     if os.path.exists(input_file):
         import time
         start_time = time.time()
-        print(f"고속 세그먼트 파싱 시작: {input_file}")
+        print(f"고속 정밀 파싱 시작: {input_file}")
         
         data = parse_word_to_json(input_file)
         
