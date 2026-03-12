@@ -42,10 +42,9 @@ def parse_word_to_json(mht_path):
         elements.append({"start": start, "type": "content", "content": formatted_table})
 
     # 2. 정규표현식 정의
-    # 날짜 패턴: 2026년 3월 11일 수요일...
-    date_pattern = re.compile(r'^\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일')
+    # 날짜 패턴: 요일까지만 추출 (예: 2026년 3월 11일 수요일)
+    date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)')
     # 발신자 패턴: 이름/직책/그룹/회사 [09:16]:
-    # 대괄호 안의 시간 형식을 기준으로 분리
     sender_pattern = re.compile(r'^(.*)\s*\[(\d{2}:\d{2})\]:$')
 
     # 3. 모든 문단 분류
@@ -67,8 +66,10 @@ def parse_word_to_json(mht_path):
 
         is_inside_table = any(start <= p_start < end for start, end in table_ranges)
         if not is_inside_table:
-            if date_pattern.match(text):
-                elements.append({"start": p_start, "type": "date", "content": text})
+            date_match = date_pattern.match(text)
+            if date_match:
+                # 매칭된 그룹(요일까지)만 저장
+                elements.append({"start": p_start, "type": "date", "content": date_match.group(1)})
             elif sender_pattern.match(text):
                 match = sender_pattern.match(text)
                 elements.append({
@@ -95,7 +96,6 @@ def parse_word_to_json(mht_path):
             current_sender = e["sender"]
             current_time = e["time"]
         elif e["type"] == "content":
-            # 이전 sender_info가 있는 경우에만 메시지로 추가 (메타데이터 문구 등 제외 방지)
             if current_sender != "N/A":
                 structured_messages.append({
                     "date": current_date,
@@ -116,7 +116,7 @@ def parse_word_to_json(mht_path):
 if __name__ == "__main__":
     input_file = "your_file.mht"
     if os.path.exists(input_file):
-        print(f"JSON 구조화 파싱 시작: {input_file}")
+        print(f"JSON 구조화 파싱 시작 (날짜 정제): {input_file}")
         data = parse_word_to_json(input_file)
         
         output_filename = "messenger_backup.json"
