@@ -8,37 +8,36 @@ def parse_word_to_json(mht_path):
     word = win32.gencache.EnsureDispatch('Word.Application')
     word.Visible = False
     word.DisplayAlerts = 0
-    word.ScreenUpdating = False # 성능 향상을 위해 화면 업데이트 중지
+    word.ScreenUpdating = False
     
     abs_path = os.path.abspath(mht_path)
     doc = word.Documents.Open(abs_path, ReadOnly=True, Visible=False)
     
-    # [최적화 1] 전체 텍스트를 한 번의 COM 호출로 가져옴
+    # 전체 텍스트 로드
     full_text = doc.Content.Text
     
     elements = []
     table_ranges = []
 
-    # [최적화 2] 테이블 벌크 파싱 (열 보존 로직 강화)
+    # 1. 테이블 파싱 및 범위 기록
     for table in doc.Tables:
         start = table.Range.Start
         end = table.Range.End
         table_ranges.append((start, end))
         
-        # Cell(r,c) 순회 대신 전체 텍스트 파싱
         raw_table_text = table.Range.Text
-        # Word 테이블 구분자: 행(\r\x07), 셀(\x07)
         rows_raw = raw_table_text.strip('\r\x07').split('\r\x07')
         
         table_md = []
         for i, row_raw in enumerate(rows_raw):
             cells_raw = row_raw.split('\x07')
             if cells_raw and not cells_raw[-1]:
-                cells_raw.pop() # 행 끝의 불필요한 빈 요소 제거
+                cells_raw.pop()
             
             clean_cells = []
             for cell in cells_raw:
-                c = cell.replace('|', r'\|').replace('\x0b', '<br>').replace('\r', '<br>').strip()
+                # 표 내부 텍스트 정제
+                c = cell.replace('\x07', '').replace('|', r'\|').replace('\x0b', '<br>').replace('\r', '<br>').strip()
                 c = re.sub(r'(<br>)+$', '', c)
                 clean_cells.append(c)
             
@@ -53,36 +52,35 @@ def parse_word_to_json(mht_path):
             "content": "\n".join(table_md)
         })
 
-    # [최적화 3] 정규표현식을 이용한 고속 메타데이터 및 패턴 추출
+    # 2. 메타데이터 추출 (줄바꿈 \r 전까지만 매칭하도록 수정)
     metadata = {"title": "N/A", "period": "N/A", "participants": "N/A"}
     
-    # 메타데이터 추출
-    title_match = re.search(r'제목\s*:\s*(.*)', full_text)
+    title_match = re.search(r'제목\s*:\s*([^\r\n]*)', full_text)
     if title_match: metadata["title"] = title_match.group(1).strip()
     
-    period_match = re.search(r'기간\s*:\s*(.*)', full_text)
+    period_match = re.search(r'기간\s*:\s*([^\r\n]*)', full_text)
     if period_match: metadata["period"] = period_match.group(1).strip()
     
-    participants_match = re.search(r'참석자.*?\s*:\s*(.*)', full_text)
+    participants_match = re.search(r'참석자.*?\s*:\s*([^\r\n]*)', full_text)
     if participants_match: metadata["participants"] = participants_match.group(1).strip()
 
-    # 날짜 및 발신자 패턴 정의
-    date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)', re.MULTILINE)
-    sender_pattern = re.compile(r'^([^\r\n]+)\s*\[(\d{2}:\d{2})\]:', re.MULTILINE)
+    # 3. 문단 파싱 (날짜, 발신자, 본문)
+    date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)')
+    sender_pattern = re.compile(r'^([^\r\n]+)\s*\[(\d{2}:\d{2})\]:')
 
-    # 문단 단위 분리 및 분류 (COM 호출 없이 full_text 기반)
     current_pos = 0
-    # \r 은 Word에서 문단 구분자임
+    # Word의 문단 구분자인 \r 로 분리
     for p_text in full_text.split('\r'):
-        p_len = len(p_text) + 1 # \r 길이 포함
-        p_strip = p_text.strip()
+        p_len = len(p_text) + 1 
+        p_strip = p_text.replace('\x07', '').strip() # 제어 문자 제거
         
         if p_strip:
-            # 해당 위치가 테이블 내부인지 확인
-            is_inside_table = any(s <= current_pos < e for s, e in table_ranges)
+            # 표 범위 내 텍스트인지 체크 (미세 오차 방지를 위해 중앙값으로 체크)
+            mid_pos = current_pos + (len(p_text) // 2)
+            is_inside_table = any(s <= mid_pos < e for s, e in table_ranges)
             
             if not is_inside_table:
-                # 메타데이터 줄은 무시 (이미 추출함)
+                # 메타데이터 라인 제외
                 is_meta = any(p_strip.startswith(x) for x in ["제목 :", "기간 :"]) or "참석자" in p_strip[:10]
                 
                 if not is_meta:
@@ -119,12 +117,15 @@ def parse_word_to_json(mht_path):
             current_time = e["time"]
         elif e["type"] == "content":
             if current_sender != "N/A":
-                structured_messages.append({
-                    "date": current_date,
-                    "sender": current_sender,
-                    "time": current_time,
-                    "content": html.unescape(e["content"])
-                })
+                # 최종 내용에서 한 번 더 제어 문자 및 불필요한 공백 정리
+                clean_content = e["content"].replace('\x07', '').strip()
+                if clean_content:
+                    structured_messages.append({
+                        "date": current_date,
+                        "sender": current_sender,
+                        "time": current_time,
+                        "content": html.unescape(clean_content)
+                    })
 
     doc.Close(False)
     word.ScreenUpdating = True
@@ -140,7 +141,7 @@ if __name__ == "__main__":
     if os.path.exists(input_file):
         import time
         start_time = time.time()
-        print(f"고속 파싱 시작: {input_file}")
+        print(f"고속 정밀 파싱 시작: {input_file}")
         
         data = parse_word_to_json(input_file)
         
@@ -150,6 +151,7 @@ if __name__ == "__main__":
         elapsed = time.time() - start_time
         print("-" * 30)
         print(f"파싱 완료! (소요 시간: {elapsed:.2f}초)")
+        print(f"제목: {data['metadata']['title']}")
         print(f"메시지 수: {len(data['messages'])}")
     else:
         print(f"파일을 찾을 수 없습니다: {input_file}")
