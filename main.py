@@ -15,7 +15,6 @@ def parse_word_to_json(mht_path):
     
     # 전체 텍스트 로드
     full_text = doc.Content.Text
-    
     elements = []
     table_ranges = []
 
@@ -36,7 +35,6 @@ def parse_word_to_json(mht_path):
             
             clean_cells = []
             for cell in cells_raw:
-                # 표 내부 텍스트 정제
                 c = cell.replace('\x07', '').replace('|', r'\|').replace('\x0b', '<br>').replace('\r', '<br>').strip()
                 c = re.sub(r'(<br>)+$', '', c)
                 clean_cells.append(c)
@@ -52,54 +50,61 @@ def parse_word_to_json(mht_path):
             "content": "\n".join(table_md)
         })
 
-    # 2. 메타데이터 추출 (줄바꿈 \r 전까지만 매칭하도록 수정)
+    # 2. 메타데이터 추출 (초반 2000자 내외에서만 검색)
     metadata = {"title": "N/A", "period": "N/A", "participants": "N/A"}
+    top_text = full_text[:2000]
     
-    title_match = re.search(r'제목\s*:\s*([^\r\n]*)', full_text)
+    title_match = re.search(r'제목\s*:\s*([^\r\n]*)', top_text)
     if title_match: metadata["title"] = title_match.group(1).strip()
     
-    period_match = re.search(r'기간\s*:\s*([^\r\n]*)', full_text)
+    period_match = re.search(r'기간\s*:\s*([^\r\n]*)', top_text)
     if period_match: metadata["period"] = period_match.group(1).strip()
     
-    participants_match = re.search(r'참석자.*?\s*:\s*([^\r\n]*)', full_text)
+    participants_match = re.search(r'참석자.*?\s*:\s*([^\r\n]*)', top_text)
     if participants_match: metadata["participants"] = participants_match.group(1).strip()
 
-    # 3. 문단 파싱 (날짜, 발신자, 본문)
+    # 3. 표 영역을 제외한 나머지 영역에서만 문단 파싱 진행
     date_pattern = re.compile(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)')
     sender_pattern = re.compile(r'^([^\r\n]+)\s*\[(\d{2}:\d{2})\]:')
 
-    current_pos = 0
-    # Word의 문단 구분자인 \r 로 분리
-    for p_text in full_text.split('\r'):
-        p_len = len(p_text) + 1 
-        p_strip = p_text.replace('\x07', '').strip() # 제어 문자 제거
-        
-        if p_strip:
-            # 표 범위 내 텍스트인지 체크 (미세 오차 방지를 위해 중앙값으로 체크)
-            mid_pos = current_pos + (len(p_text) // 2)
-            is_inside_table = any(s <= mid_pos < e for s, e in table_ranges)
+    # 표 범위를 기준으로 텍스트 세그먼트 분리
+    table_ranges.sort()
+    last_pos = 0
+
+    def process_segment(segment_text, start_offset):
+        current_offset = start_offset
+        for p_text in segment_text.split('\r'):
+            p_len = len(p_text) + 1
+            p_strip = p_text.replace('\x07', '').strip()
             
-            if not is_inside_table:
-                # 메타데이터 라인 제외
+            if p_strip:
                 is_meta = any(p_strip.startswith(x) for x in ["제목 :", "기간 :"]) or "참석자" in p_strip[:10]
-                
                 if not is_meta:
                     date_m = date_pattern.match(p_strip)
                     sender_m = sender_pattern.match(p_strip)
                     
                     if date_m:
-                        elements.append({"start": current_pos, "type": "date", "content": date_m.group(1)})
+                        elements.append({"start": current_offset, "type": "date", "content": date_m.group(1)})
                     elif sender_m:
                         elements.append({
-                            "start": current_pos, 
+                            "start": current_offset, 
                             "type": "sender_info", 
                             "sender": sender_m.group(1).strip(),
                             "time": sender_m.group(2).strip()
                         })
                     else:
-                        elements.append({"start": current_pos, "type": "content", "content": p_strip.replace('\x0b', '\n')})
-        
-        current_pos += p_len
+                        elements.append({"start": current_offset, "type": "content", "content": p_strip.replace('\x0b', '\n')})
+            current_offset += p_len
+
+    # 표와 표 사이 구간 파싱
+    for t_start, t_end in table_ranges:
+        if t_start > last_pos:
+            process_segment(full_text[last_pos:t_start], last_pos)
+        last_pos = t_end
+    
+    # 마지막 표 이후 구간 파싱
+    if last_pos < len(full_text):
+        process_segment(full_text[last_pos:], last_pos)
 
     # 4. 정렬 및 구조화
     elements.sort(key=lambda x: x["start"])
@@ -117,7 +122,6 @@ def parse_word_to_json(mht_path):
             current_time = e["time"]
         elif e["type"] == "content":
             if current_sender != "N/A":
-                # 최종 내용에서 한 번 더 제어 문자 및 불필요한 공백 정리
                 clean_content = e["content"].replace('\x07', '').strip()
                 if clean_content:
                     structured_messages.append({
@@ -141,7 +145,7 @@ if __name__ == "__main__":
     if os.path.exists(input_file):
         import time
         start_time = time.time()
-        print(f"고속 정밀 파싱 시작: {input_file}")
+        print(f"고속 세그먼트 파싱 시작: {input_file}")
         
         data = parse_word_to_json(input_file)
         
