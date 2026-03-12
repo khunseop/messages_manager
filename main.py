@@ -39,11 +39,14 @@ def parse_word_to_json(mht_path):
                 table_md.append(f"| {' | '.join(['---'] * len(row_data))} |")
         
         formatted_table = "\n".join(table_md)
-        elements.append({"start": start, "type": "table", "content": formatted_table})
+        elements.append({"start": start, "type": "content", "content": formatted_table})
 
-    # 2. 정규표현식
+    # 2. 정규표현식 정의
+    # 날짜 패턴: 2026년 3월 11일 수요일...
     date_pattern = re.compile(r'^\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일')
-    sender_pattern = re.compile(r'^(.*)\s+((?:오전|오후)\s+\d{1,2}:\d{2}):$')
+    # 발신자 패턴: 이름/직책/그룹/회사 [09:16]:
+    # 대괄호 안의 시간 형식을 기준으로 분리
+    sender_pattern = re.compile(r'^(.*)\s*\[(\d{2}:\d{2})\]:$')
 
     # 3. 모든 문단 분류
     for para in doc.Paragraphs:
@@ -51,6 +54,7 @@ def parse_word_to_json(mht_path):
         text = para.Range.Text.strip()
         if not text: continue
         
+        # 메타데이터 추출
         if text.startswith("제목 :") and metadata["title"] == "N/A":
             metadata["title"] = text.replace("제목 :", "").strip()
             continue
@@ -69,12 +73,12 @@ def parse_word_to_json(mht_path):
                 match = sender_pattern.match(text)
                 elements.append({
                     "start": p_start, 
-                    "type": "sender", 
+                    "type": "sender_info", 
                     "sender": match.group(1).strip(),
                     "time": match.group(2).strip()
                 })
             else:
-                elements.append({"start": p_start, "type": "text", "content": text.replace('\x0b', '\n')})
+                elements.append({"start": p_start, "type": "content", "content": text.replace('\x0b', '\n')})
 
     # 4. 정렬 및 메시지 구조화
     elements.sort(key=lambda x: x["start"])
@@ -87,18 +91,18 @@ def parse_word_to_json(mht_path):
     for e in elements:
         if e["type"] == "date":
             current_date = e["content"]
-        elif e["type"] == "sender":
+        elif e["type"] == "sender_info":
             current_sender = e["sender"]
             current_time = e["time"]
-        elif e["type"] in ["text", "table"]:
-            # 메시지 객체 생성
-            structured_messages.append({
-                "date": current_date,
-                "sender": current_sender,
-                "time": current_time,
-                "type": e["type"],
-                "content": html.unescape(e["content"])
-            })
+        elif e["type"] == "content":
+            # 이전 sender_info가 있는 경우에만 메시지로 추가 (메타데이터 문구 등 제외 방지)
+            if current_sender != "N/A":
+                structured_messages.append({
+                    "date": current_date,
+                    "sender": current_sender,
+                    "time": current_time,
+                    "content": html.unescape(e["content"])
+                })
 
     doc.Close(False)
     word.Quit()
@@ -112,7 +116,7 @@ def parse_word_to_json(mht_path):
 if __name__ == "__main__":
     input_file = "your_file.mht"
     if os.path.exists(input_file):
-        print(f"JSON 변환 시작: {input_file}")
+        print(f"JSON 구조화 파싱 시작: {input_file}")
         data = parse_word_to_json(input_file)
         
         output_filename = "messenger_backup.json"
@@ -120,7 +124,7 @@ if __name__ == "__main__":
             json.dump(data, f, ensure_ascii=False, indent=2)
             
         print("-" * 30)
-        print(f"변환 완료! 총 {len(data['messages'])}개의 메시지 추출됨.")
+        print(f"파싱 완료! 메시지 수: {len(data['messages'])}")
         print(f"결과 저장: {output_filename}")
     else:
         print(f"파일을 찾을 수 없습니다: {input_file}")
