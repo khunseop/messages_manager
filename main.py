@@ -19,7 +19,7 @@ def parse_word_keeping_order(mht_path):
         "participants": "N/A"
     }
 
-    # 1. 모든 표 가져오기 (Cell 순회 방식)
+    # 1. 모든 표 가져오기 (이미지나 특정 서식 대응)
     table_ranges = []
     for table in doc.Tables:
         start = table.Range.Start
@@ -32,9 +32,7 @@ def parse_word_keeping_order(mht_path):
             for c in range(1, table.Columns.Count + 1):
                 try:
                     cell_text = table.Cell(r, c).Range.Text
-                    # 셀 끝 문자(\x07) 제거, 개행 및 vt를 <br>로 변환
                     clean_text = cell_text.replace('\x07', '').replace('\r', '<br>').replace('\x0b', '<br>')
-                    # Markdown 파이프 기호 이스케이프 (raw string 사용으로 경고 해결)
                     clean_text = clean_text.replace('|', r'\|').strip()
                     clean_text = re.sub(r'(<br>)+$', '', clean_text)
                     row_data.append(clean_text)
@@ -46,33 +44,52 @@ def parse_word_keeping_order(mht_path):
                 table_md.append(f"| {' | '.join(['---'] * len(row_data))} |")
         
         formatted_table = "\n" + "\n".join(table_md) + "\n"
-        elements.append((table.Range.Start, "table", formatted_table))
+        elements.append((start, "table", formatted_table))
 
-    # 2. 모든 문단 가져오기 및 메타데이터 추출
+    # 2. 정규표현식 정의
+    # 날짜 패턴: 2026년 3월 11일 수요일...
+    date_pattern = re.compile(r'^\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일')
+    # 발신자 패턴: 이름/그룹/회사 오전/오후 12:34:
+    # 그룹명에 /가 섞여있을 수 있으므로 뒤에서부터 시간 패턴을 찾음
+    sender_pattern = re.compile(r'^(.*)\s+((?:오전|오후)\s+\d{1,2}:\d{2}):$')
+
+    # 3. 모든 문단 가져오기 및 분류
     for para in doc.Paragraphs:
         p_start = para.Range.Start
         text = para.Range.Text.strip()
-        
-        # 메타데이터 추출 (제목, 기간, 참석자)
         if not text: continue
         
+        # 메타데이터 추출 (이미 완료된 로직)
         if text.startswith("제목 :") and metadata["title"] == "N/A":
             metadata["title"] = text.replace("제목 :", "").strip()
+            continue
         elif text.startswith("기간 :") and metadata["period"] == "N/A":
             metadata["period"] = text.replace("기간 :", "").strip()
+            continue
         elif "참석자" in text and ":" in text and metadata["participants"] == "N/A":
             metadata["participants"] = text.split(":", 1)[1].strip()
+            continue
 
-        # 표 외부 문단만 저장
+        # 표 외부 문단 분류 가공
         is_inside_table = any(start <= p_start < end for start, end in table_ranges)
         if not is_inside_table:
-            clean_p_text = text.replace('\x0b', '\n')
-            elements.append((p_start, "text", clean_p_text))
+            # 날짜 구분선인 경우
+            if date_pattern.match(text):
+                elements.append((p_start, "date", f"\n---\n### 📅 {text}\n"))
+            # 발신자 정보인 경우
+            elif sender_pattern.match(text):
+                match = sender_pattern.match(text)
+                user_info = match.group(1).strip()
+                time_str = match.group(2).strip()
+                elements.append((p_start, "sender", f"\n**[{user_info}]** ({time_str})"))
+            # 일반 대화 내용
+            else:
+                clean_p_text = text.replace('\x0b', '\n')
+                elements.append((p_start, "text", clean_p_text))
 
-    # 3. 정렬 및 병합
+    # 4. 정렬 및 최종 조립
     elements.sort(key=lambda x: x[0])
     
-    # 메타데이터를 상단에 배치
     header_info = f"""# Messenger Backup Report
 - **제목**: {metadata['title']}
 - **기간**: {metadata['period']}
@@ -81,7 +98,16 @@ def parse_word_keeping_order(mht_path):
 ---
 """
     
-    final_content = header_info + "\n\n".join([item[2] for item in elements])
+    # 대화 내용 조립
+    chat_body = []
+    for _, e_type, e_content in elements:
+        if e_type == "text":
+            # 일반 텍스트는 바로 앞의 발신자나 날짜 뒤에 자연스럽게 붙도록 함
+            chat_body.append(e_content)
+        else:
+            chat_body.append(e_content)
+            
+    final_content = header_info + "\n".join(chat_body)
     
     # 후처리
     final_content = html.unescape(final_content)
@@ -96,18 +122,15 @@ def parse_word_keeping_order(mht_path):
 if __name__ == "__main__":
     input_file = "your_file.mht"
     if os.path.exists(input_file):
-        print(f"파싱 시작: {input_file}")
+        print(f"채팅 로그 재구성 시작: {input_file}")
         result_text, meta = parse_word_keeping_order(input_file)
         
-        # 파일명에 제목이나 날짜를 넣어서 저장할 수도 있습니다.
         output_filename = "ordered_messenger_backup.md"
         with open(output_filename, "w", encoding="utf-8") as f:
             f.write(result_text)
             
         print("-" * 30)
-        print(f"추출된 정보:")
-        print(f"  - 제목: {meta['title']}")
-        print(f"  - 기간: {meta['period']}")
-        print(f"  - 완료: {output_filename}")
+        print(f"분석 완료: {meta['title']}")
+        print(f"결과 저장: {output_filename}")
     else:
         print(f"파일을 찾을 수 없습니다: {input_file}")
