@@ -3,7 +3,6 @@ REM MessageManager 빌드 스크립트 (PyInstaller 필요)
 
 echo [1/3] 의존성 확인...
 pip install -r requirements.txt
-pip install pyinstaller
 
 echo [2/3] 실행 파일 빌드 시작...
 REM --onefile: 단일 파일 생성
