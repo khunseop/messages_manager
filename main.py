@@ -11,15 +11,17 @@ from bs4 import BeautifulSoup
 
 def get_text_from_notepad_hidden(file_path):
     """
-    PID를 기반으로 특정 메모장 프로세스의 텍스트를 정밀하게 추출합니다.
+    메모장을 최소화 상태로 실행하여 텍스트를 안정적으로 추출합니다.
     """
     abs_path = os.path.abspath(file_path)
     filename = os.path.basename(file_path)
     
-    # 1. 메모장 실행
+    # 1. 메모장을 최소화 상태로 실행 (SW_SHOWMINIMIZED = 2)
+    # 완전 숨김(HIDE)보다 OS/DRM 호환성이 훨씬 좋음
     info = subprocess.STARTUPINFO()
     info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    info.wShowWindow = win32con.SW_HIDE
+    info.wShowWindow = win32con.SW_SHOWMINIMIZED
+    
     try:
         proc = subprocess.Popen(['notepad.exe', abs_path], startupinfo=info)
         target_pid = proc.pid
@@ -30,49 +32,45 @@ def get_text_from_notepad_hidden(file_path):
     content = ""
     hwnd = 0
     
-    # 2. PID에 해당하는 창 핸들 찾기 (재시도 로직)
-    for attempt in range(10): # 0.5초 간격으로 10번 시도 (총 5초)
+    # 2. 핸들 획득 및 텍스트 로딩 대기 (최대 10초)
+    start_time = time.time()
+    while time.time() - start_time < 10:
         def callback(h, extra):
-            if win32gui.IsWindowVisible(h) or True: # Hide 상태여도 찾아야 함
-                _, pid = win32process.GetWindowThreadProcessId(h)
-                if pid == target_pid:
-                    # 클래스명이 Notepad인 창만 필터링
-                    if win32gui.GetClassName(h) == "Notepad":
-                        extra.append(h)
+            _, pid = win32process.GetWindowThreadProcessId(h)
+            if pid == target_pid:
+                # 윈도우 11 및 10의 메모장 클래스명 확인
+                if win32gui.GetClassName(h) == "Notepad":
+                    extra.append(h)
         
         hwnds = []
         win32gui.EnumWindows(callback, hwnds)
+        
         if hwnds:
             hwnd = hwnds[0]
-            break
-        time.sleep(0.5)
-    
-    if not hwnd:
-        print(f"  [Error] 메모장 핸들을 찾을 수 없음 (PID: {target_pid}): {filename}")
-        proc.terminate()
-        return None
-
-    # 3. 텍스트 추출
-    try:
-        edit_hwnd = win32gui.FindWindowEx(hwnd, None, "RichEditD2Dpt", None)
-        if not edit_hwnd:
-            edit_hwnd = win32gui.FindWindowEx(hwnd, None, "Edit", None)
+            # 텍스트 영역 핸들 찾기
+            edit_hwnd = win32gui.FindWindowEx(hwnd, None, "RichEditD2Dpt", None)
+            if not edit_hwnd:
+                edit_hwnd = win32gui.FindWindowEx(hwnd, None, "Edit", None)
             
-        if edit_hwnd:
-            length = win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXTLENGTH, 0, 0)
-            if length > 0:
-                buffer = ctypes.create_unicode_buffer(length + 1)
-                win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXT, length + 1, buffer)
-                content = buffer.value
-            else:
-                print(f"  [Warning] 메모장 텍스트 길이가 0임: {filename}")
-    except Exception as e:
-        print(f"  [Error] 텍스트 추출 중 예외 발생: {e}")
-    finally:
-        # 4. 종료
-        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-        time.sleep(0.1)
+            if edit_hwnd:
+                # 텍스트가 실제로 로드되었는지 확인
+                length = win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXTLENGTH, 0, 0)
+                if length > 0:
+                    buffer = ctypes.create_unicode_buffer(length + 1)
+                    win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXT, length + 1, buffer)
+                    content = buffer.value
+                    if content.strip(): # 공백이 아닌 실제 내용이 있으면 성공
+                        break
+        
+        time.sleep(0.5) # 0.5초 간격 재시도
+    
+    # 3. 정리
+    try:
+        if hwnd:
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        time.sleep(0.2)
         proc.terminate()
+    except: pass
         
     return content
 
@@ -94,7 +92,7 @@ def parse_mht_html(html_source):
     try:
         soup = BeautifulSoup(html_source, 'lxml')
     except Exception as e:
-        print(f"  [Error] BeautifulSoup 파싱 실패: {e}")
+        print(f"  [Error] BS4 Parsing Error: {e}")
         return None
     
     metadata = {"title": "N/A", "participants": "N/A", "start_date": "N/A"}
