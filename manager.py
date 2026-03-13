@@ -72,11 +72,15 @@ def process_file(file_path):
     data = parse_mht_html(raw_html)
     if not data: return None
     
-    # 방 이름 정리
+    # [개선] 방 이름 결정: 메타데이터 우선, 실패 시 파일명에서 날짜 제거
     room_name = data['metadata']['title']
-    if room_name == "N/A":
-        room_match = re.match(r'^(.*)\(\d{4}-\d{2}-\d{2}\)', file_name)
-        room_name = room_match.group(1).strip() if room_match else os.path.splitext(file_name)[0]
+    if room_name == "N/A" or not room_name:
+        # 파일명에서 (YYYY-MM-DD) 형식 제거
+        room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
+        room_name = os.path.splitext(room_name)[0].strip()
+    
+    # 동일 대화방임에도 제목 뒤에 날짜가 붙어있는 경우 방지
+    room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
     room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
     
     return {"room_name": room_name, "data": data, "file_name": file_name}
