@@ -64,7 +64,7 @@ def export_to_markdown(room_name, data):
         if content.strip().startswith('|'):
             content = "\n" + content
             
-        md_content += f"**{m['sender']}** ({m['time']})\n{content}\n\n"
+        md_content += f"**[{m['sender']}]** ({m['time']})\n{content}\n\n"
         
     output_path = os.path.join(OUTPUT_DIR, f"{room_name}.md")
     with open(output_path, "w", encoding="utf-8") as f:
