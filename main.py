@@ -123,8 +123,13 @@ def parse_mht_html(html_source):
             
             date_span = author_div.find('span', class_='date')
             if date_span:
-                # [10:57]: -> 10:57
-                msg_time = re.sub(r'[\[\]:]', '', date_span.get_text(strip=True)).strip()
+                # [10:57]: 에서 숫자만 추출하여 HH:MM 형식 보장
+                raw_time = date_span.get_text(strip=True)
+                time_digits = re.sub(r'[^0-9]', '', raw_time)
+                if len(time_digits) == 4:
+                    msg_time = f"{time_digits[:2]}:{time_digits[2:]}"
+                else:
+                    msg_time = raw_time.strip('[] :')
 
         # 메시지 내용 추출
         message_div = item.find('div', class_='message')

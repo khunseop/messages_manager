@@ -59,7 +59,12 @@ def export_to_markdown(room_name, data):
             current_date = m['date']
             md_content += f"\n### 📅 {current_date}\n\n"
         
-        md_content += f"**[{m['sender']}]** ({m['time']})\n{m['content']}\n\n"
+        content = m['content']
+        # 표(| ... |)인 경우 앞에 빈 줄 추가하여 옵시디언 렌더링 보장
+        if content.strip().startswith('|'):
+            content = "\n" + content
+            
+        md_content += f"**{m['sender']}** ({m['time']})\n{content}\n\n"
         
     output_path = os.path.join(OUTPUT_DIR, f"{room_name}.md")
     with open(output_path, "w", encoding="utf-8") as f:
