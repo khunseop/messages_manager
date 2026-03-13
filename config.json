@@ -1,0 +1,8 @@
+{
+  "input_dir": "inputs",
+  "output_dir": "outputs",
+  "archive_dir": "archive",
+  "data_dir": "data/json",
+  "log_file": "manager.log",
+  "max_retries": 3
+}

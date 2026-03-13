@@ -152,3 +152,8 @@ cython_debug/
 *.md
 !README.md
 !ordered_messenger_backup.md
+manager.log
+archive/
+build/
+dist/
+*.spec

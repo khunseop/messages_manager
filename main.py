@@ -1,181 +1,200 @@
 import os
+import json
 import re
 import time
-import win32gui
-import win32con
-import ctypes
-import subprocess
-import html
-import win32process
-import copy
-from bs4 import BeautifulSoup
+import shutil
+import logging
+import sys
+from datetime import datetime
+from parser_core import get_text_from_notepad_hidden, parse_mht_html
 
-def get_text_from_notepad_hidden(file_path):
-    """
-    메모장을 화면 밖으로 보내어 작업표시줄과 화면에 나타나지 않게 처리하며 텍스트를 추출합니다.
-    """
-    abs_path = os.path.abspath(file_path)
-    filename = os.path.basename(file_path)
-    
-    # 1. 메모장을 숨김 상태로 시작 시도
-    info = subprocess.STARTUPINFO()
-    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    info.wShowWindow = win32con.SW_HIDE # 일단 숨김으로 시작
-    
-    try:
-        proc = subprocess.Popen(['notepad.exe', abs_path], startupinfo=info)
-        target_pid = proc.pid
-    except Exception as e:
-        print(f"  [Error] 메모장 실행 실패: {e}")
-        return None
+# 실행 파일 경로 처리 (PyInstaller 대응)
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-    content = ""
-    hwnd = 0
-    
-    # 2. 핸들 획득 (SW_HIDE 상태여도 PID로 찾기 가능)
-    start_time = time.time()
-    while time.time() - start_time < 8:
-        def callback(h, extra):
-            _, pid = win32process.GetWindowThreadProcessId(h)
-            if pid == target_pid and win32gui.GetClassName(h) == "Notepad":
-                extra.append(h)
-        hwnds = []
-        win32gui.EnumWindows(callback, hwnds)
-        
-        if hwnds:
-            hwnd = hwnds[0]
-            # 만약 HIDE 상태라 텍스트 로딩이 안 된다면 잠시 화면 밖으로 이동시켜 활성화
-            # win32gui.ShowWindow(hwnd, win32con.SW_SHOWMINIMIZED) # 필요 시 활성화
-            
-            edit_hwnd = win32gui.FindWindowEx(hwnd, None, "RichEditD2Dpt", None)
-            if not edit_hwnd:
-                edit_hwnd = win32gui.FindWindowEx(hwnd, None, "Edit", None)
-            
-            if edit_hwnd:
-                length = win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXTLENGTH, 0, 0)
-                if length > 0:
-                    buffer = ctypes.create_unicode_buffer(length + 1)
-                    win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXT, length + 1, buffer)
-                    content = buffer.value
-                    if content.strip(): break
-        time.sleep(0.5)
-    
-    # 3. 종료
+# 설정 파일 로드
+CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+DEFAULT_CONFIG = {
+    "input_dir": "inputs",
+    "output_dir": "outputs",
+    "archive_dir": "archive",
+    "data_dir": "data/json",
+    "log_file": "manager.log",
+    "max_retries": 3
+}
+
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                # 누락된 키가 있으면 기본값으로 채움
+                for k, v in DEFAULT_CONFIG.items():
+                    if k not in config:
+                        config[k] = v
+                return config
+        except Exception as e:
+            print(f"설정 파일 로드 실패: {e}. 기본값을 사용합니다.")
+    return DEFAULT_CONFIG
+
+config = load_config()
+
+# 경로 설정 적용
+INPUT_DIR = os.path.join(BASE_DIR, config['input_dir'])
+DATA_DIR = os.path.join(BASE_DIR, config['data_dir'])
+OUTPUT_DIR = os.path.join(BASE_DIR, config['output_dir'])
+ARCHIVE_DIR = os.path.join(BASE_DIR, config['archive_dir'])
+LOG_FILE = os.path.join(BASE_DIR, config['log_file'])
+MAX_RETRIES = config['max_retries']
+
+# 폴더 생성 보장
+for d in [INPUT_DIR, DATA_DIR, OUTPUT_DIR, ARCHIVE_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
+def get_unique_key(msg):
+    return (msg.get('date', 'N/A'), msg.get('sender', 'N/A'), msg.get('time', 'N/A'), msg.get('content', '').strip())
+
+def clean_date_string(date_str):
+    """'2026년 3월 13일 금요일' -> '2026-03-13' 형식으로 변환"""
     try:
-        if hwnd: win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-        time.sleep(0.1)
-        proc.terminate()
+        match = re.search(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', date_str)
+        if match:
+            year, month, day = match.groups()
+            return f"{year}-{int(month):02d}-{int(day):02d}"
     except: pass
+    return date_str.replace(' ', '_')
+
+def merge_messages(existing_messages, new_messages):
+    seen_keys = set(get_unique_key(m) for m in existing_messages)
+    merged = list(existing_messages)
+    added_count = 0
+    for m in new_messages:
+        key = get_unique_key(m)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            merged.append(m)
+            added_count += 1
+    return merged, added_count
+
+def export_to_split_markdown(room_name, data):
+    """JSON 데이터를 대화방 폴더 내 날짜별 마크다운 파일로 분리 저장"""
+    meta, messages = data.get('metadata', {}), data.get('messages', [])
+    room_output_dir = os.path.join(OUTPUT_DIR, room_name)
+    os.makedirs(room_output_dir, exist_ok=True)
+    
+    date_groups = {}
+    for m in messages:
+        date_groups.setdefault(m['date'], []).append(m)
         
-    return content
-
-def clean_text_for_obsidian(element, is_table=False):
-    if not element: return ""
-    # 복사본 사용 (원본 soup 변형 방지)
-    el = copy.copy(element)
-    
-    # <br> 태그를 \n으로 변경하여 줄바꿈 유지
-    for br in el.find_all('br'):
-        br.replace_with('\n')
-    
-    # get_text() 사용 (구분자 없이 <a> 태그 등 인라인 태그 줄바꿈 방지)
-    text = el.get_text()
-    
-    # 각 줄의 앞뒤 공백 제거 후 다시 합침
-    lines = [l.strip() for l in text.split('\n')]
-    text = '\n'.join(lines).strip()
-    
-    # Obsidian에서 <, > 가 HTML로 오해받지 않도록 이스케이프 (태그 형식 보존 방지)
-    text = text.replace('<', '&lt;').replace('>', '&gt;')
-    
-    if is_table:
-        # 테이블 내 줄바꿈은 <br>로 치환
-        text = text.replace('\n', '<br>')
-        # 방금 치환한 <br>은 다시 태그로 복구
-        text = text.replace('&lt;br&gt;', '<br>')
+    for date_key, msg_list in date_groups.items():
+        file_date = clean_date_string(date_key)
+        output_path = os.path.join(room_output_dir, f"{file_date}_{room_name}.md")
         
-    return text
+        md_content = f"# {room_name} ({date_key})\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
+        for m in msg_list:
+            content = m['content']
+            if content.strip().startswith('|'): content = "\n" + content
+            md_content += f"**[{m['sender']}]** ({m['time']})\n{content}\n\n"
+            
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+    return room_output_dir
 
-def parse_table_to_markdown(table_tag):
-    rows = []
-    for tr in table_tag.find_all('tr'):
-        cells = []
-        for td in tr.find_all(['td', 'th']):
-            c_text = clean_text_for_obsidian(td, is_table=True)
-            cells.append(c_text.replace('|', r'\|'))
-        if not any(cells): continue
-        rows.append(f"| {' | '.join(cells)} |")
-        if len(rows) == 1:
-            rows.append(f"| {' | '.join(['---'] * len(cells))} |")
-    return "\n".join(rows)
-
-def parse_mht_html(html_source):
-    if not html_source: return None
-    soup = BeautifulSoup(html_source, 'lxml')
+def process_file(file_path):
+    """단일 파일을 순차적으로 파싱하고 결과를 즉시 저장/병합"""
+    file_name = os.path.basename(file_path)
     
-    metadata = {"title": "N/A", "participants": "N/A", "start_date": "N/A"}
-    chat_title_dl = soup.find('dl', class_='chat_title')
-    if chat_title_dl:
-        dt_tag = chat_title_dl.find('dt')
-        if dt_tag:
-            metadata["title"] = re.sub(r'^제목\s*:\s*', '', dt_tag.get_text(strip=True)).strip()
-        dd_tag = chat_title_dl.find('dd')
-        if dd_tag:
-            metadata["participants"] = re.sub(r'^참석자(\(\d+\))?\s*:\s*', '', dd_tag.get_text(strip=True)).strip()
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            if attempt > 1:
+                logging.warning(f"  - [재시도 {attempt}/{MAX_RETRIES}] {file_name}")
+                time.sleep(1)
 
-    # 대화방 상단 날짜 정보 추출 (가장 중요)
-    time_wrap = soup.find('div', class_='im_time_wrap')
-    if time_wrap:
-        corner_c = time_wrap.find('span', class_='corner_C')
-        if corner_c:
-            raw_time = corner_c.get_text(strip=True)
-            # 날짜 패턴 매칭 (예: 2026년 3월 13일 금요일)
-            date_match = re.search(r'(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)', raw_time)
-            if date_match:
-                metadata["start_date"] = date_match.group(1)
+            # 1. 텍스트 추출 (HIDE 모드)
+            raw_html = get_text_from_notepad_hidden(file_path)
+            if not raw_html: continue
+            
+            # 2. 파싱
+            data = parse_mht_html(raw_html)
+            if not data: continue
+            
+            # 3. 방 이름 결정: 메타데이터 우선 사용 (파일명 날짜 무시)
+            room_name = data['metadata']['title']
+            if room_name == "N/A" or not room_name:
+                # 파일명에서 날짜 부분 제거하고 순수 방 이름만 추출
+                room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
+                room_name = os.path.splitext(room_name)[0].strip()
+            
+            # 메타데이터 제목 뒤에 날짜가 붙어있는 경우도 제거
+            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
+            room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
+            
+            # 4. 데이터 병합 (JSON)
+            json_path = os.path.join(DATA_DIR, f"{room_name}.json")
+            existing_data = {"metadata": data['metadata'], "messages": []}
+            if os.path.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    try: existing_data = json.load(f)
+                    except: pass
+            
+            merged_messages, added = merge_messages(existing_data['messages'], data['messages'])
+            final_data = {"metadata": data['metadata'], "messages": merged_messages}
+            
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(final_data, f, ensure_ascii=False, indent=2)
+            
+            # 5. 마크다운 생성 (내부 날짜별로 분리됨)
+            export_to_split_markdown(room_name, final_data)
+            logging.info(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
+            
+            # 6. 처리 완료된 파일 아카이브로 이동
+            try:
+                dest_path = os.path.join(ARCHIVE_DIR, file_name)
+                if os.path.exists(dest_path):
+                    base, ext = os.path.splitext(file_name)
+                    dest_path = os.path.join(ARCHIVE_DIR, f"{base}_{int(time.time())}{ext}")
+                shutil.move(file_path, dest_path)
+                logging.info(f"  [이동 완료] {file_name} -> archive/")
+            except Exception as e:
+                logging.error(f"  [파일 이동 실패] {file_name}: {e}")
 
-    messages = []
-    # li 태그 순회하며 메시지 추출
-    chat_items = soup.find_all('li', class_=re.compile(r'user(You|Me)'))
-    
-    # 만약 개별 메시지 사이사이에 날짜 구분선(im_time_wrap)이 더 있다면 업데이트하는 로직 추가 가능
-    current_msg_date = metadata["start_date"]
+            return True
+            
+        except Exception as e:
+            logging.error(f"  [에러] 시도 {attempt} - {file_name}: {e}")
+            
+    logging.error(f"  [최종 실패] {file_name}")
+    return False
 
-    for item in chat_items:
-        # 메시지 바로 직전에 날짜 구분선이 있는지 확인 (형제 태그 검색)
-        prev_sibling = item.find_previous_sibling()
-        if prev_sibling and 'im_time_wrap' in prev_sibling.get('class', []):
-            new_date_span = prev_sibling.find('span', class_='corner_C')
-            if new_date_span:
-                date_match = re.search(r'(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)', new_date_span.get_text(strip=True))
-                if date_match: current_msg_date = date_match.group(1)
+def run_sync_sequential():
+    files = [os.path.join(INPUT_DIR, f) for f in os.listdir(INPUT_DIR) if f.lower().endswith('.mht')]
+    if not files:
+        logging.info("처리할 MHT 파일이 없습니다.")
+        return
 
-        author_div = item.find('div', class_='author')
-        sender, msg_time = "N/A", "N/A"
-        if author_div:
-            name_span = author_div.find('span', class_='name')
-            if name_span: sender = name_span.get_text(strip=True).rstrip('/')
-            date_span = author_div.find('span', class_='date')
-            if date_span:
-                raw_time = date_span.get_text(strip=True)
-                time_digits = re.sub(r'[^0-9]', '', raw_time)
-                msg_time = f"{time_digits[:2]}:{time_digits[2:]}" if len(time_digits) == 4 else raw_time.strip('[] :')
+    logging.info(f"총 {len(files)}개 파일 처리 시작 (비가시적 모드)...")
+    success_count = 0
+    for i, f in enumerate(files):
+        logging.info(f"[{i+1}/{len(files)}] {os.path.basename(f)}")
+        if process_file(f): success_count += 1
+        time.sleep(0.3)
 
-        message_div = item.find('div', class_='message')
-        content = ""
-        if message_div:
-            table = message_div.find('table')
-            if table:
-                content = parse_table_to_markdown(table)
-            else:
-                content = clean_text_for_obsidian(message_div)
+    logging.info(f"\n[최종 요약] 전체 {len(files)}개 중 {success_count}개 성공 완료.")
 
-        if sender != "N/A" or content:
-            messages.append({
-                "date": current_msg_date,
-                "sender": sender,
-                "time": msg_time,
-                "content": content
-            })
-
-    return {"metadata": metadata, "messages": messages}
+if __name__ == "__main__":
+    start_time = datetime.now()
+    logging.info("=== 작업 스케줄러 파싱 프로세스 시작 ===")
+    run_sync_sequential()
+    logging.info(f"[완료] 전체 소요 시간: {datetime.now() - start_time}\n")
