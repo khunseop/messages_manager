@@ -14,13 +14,11 @@ def get_text_from_notepad_memory(file_path):
     abs_path = os.path.abspath(file_path)
     filename = os.path.basename(file_path)
     
-    # 1. 메모장 실행 (최소화 상태)
     info = subprocess.STARTUPINFO()
     info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     info.wShowWindow = win32con.SW_SHOWMINIMIZED
     proc = subprocess.Popen(['notepad.exe', abs_path], startupinfo=info)
     
-    # 2. 메모장 창 찾기 (최대 5초 대기)
     hwnd = 0
     start_wait = time.time()
     target_title_part = filename
@@ -41,7 +39,6 @@ def get_text_from_notepad_memory(file_path):
         proc.terminate()
         return None
 
-    # 3. 텍스트 영역(RichEditD2Dpt 또는 Edit) 찾기 및 추출
     content = ""
     try:
         edit_hwnd = win32gui.FindWindowEx(hwnd, None, "RichEditD2Dpt", None)
@@ -54,7 +51,6 @@ def get_text_from_notepad_memory(file_path):
             win32gui.SendMessage(edit_hwnd, win32con.WM_GETTEXT, length + 1, buffer)
             content = buffer.value
     finally:
-        # 4. 메모장 종료
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
         
     return content
@@ -62,30 +58,34 @@ def get_text_from_notepad_memory(file_path):
 def parse_mht_html(html_source):
     """
     추출된 HTML 소스에서 제목, 참석자, 시간을 파싱합니다.
+    접두어(제목 :, 참석자... :)를 제거합니다.
     """
     if not html_source:
         return None
         
     soup = BeautifulSoup(html_source, 'lxml')
     
-    # 1. 제목 및 참석자 파싱 (html/body/dl[@class='chat_title'])
+    # 1. 제목 및 참석자 파싱 (chat_title 클래스의 dl)
     chat_title_dl = soup.find('dl', class_='chat_title')
     title = "N/A"
     participants = "N/A"
     
     if chat_title_dl:
-        # 첫 번째 dt: 제목
-        dt_tags = chat_title_dl.find_all('dt')
-        if dt_tags:
-            title = dt_tags[0].get_text(strip=True)
+        # 제목 추출 및 정제 (첫 번째 dt)
+        dt_tag = chat_title_dl.find('dt')
+        if dt_tag:
+            raw_title = dt_tag.get_text(strip=True)
+            # "제목 :" 패턴 제거
+            title = re.sub(r'^제목\s*:\s*', '', raw_title).strip()
             
-        # 세 번째 dd: 참석자
-        dd_tags = chat_title_dl.find_all('dd')
-        if len(dd_tags) >= 3:
-            participants = dd_tags[2].get_text(strip=True)
+        # 참석자 추출 및 정제 (첫 번째 dd)
+        dd_tag = chat_title_dl.find('dd')
+        if dd_tag:
+            raw_participants = dd_tag.get_text(strip=True)
+            # "참석자(숫자) :" 또는 "참석자 :" 패턴 제거
+            participants = re.sub(r'^참석자(\(\d+\))?\s*:\s*', '', raw_participants).strip()
 
     # 2. 대화 시작 시간 파싱
-    # im_time_wrap -> im_time -> span.corner_C
     start_time = "N/A"
     time_wrap = soup.find('div', class_='im_time_wrap')
     if time_wrap:
@@ -102,7 +102,6 @@ def parse_mht_html(html_source):
     }
 
 if __name__ == "__main__":
-    # 테스트 실행
     import glob
     files = glob.glob("inputs/*.mht")
     if files:
@@ -110,7 +109,7 @@ if __name__ == "__main__":
         raw_html = get_text_from_notepad_memory(files[0])
         if raw_html:
             result = parse_mht_html(raw_html)
-            print("\n[파싱 결과]")
+            print("\n[파싱 결과 - 정제됨]")
             print(f"제목: {result['title']}")
             print(f"참석자: {result['participants']}")
             print(f"시작 시간: {result['start_time']}")
