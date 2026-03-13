@@ -2,6 +2,7 @@ import os
 import json
 import re
 import concurrent.futures
+import time
 from datetime import datetime
 from main import get_text_from_notepad_hidden, parse_mht_html
 
@@ -65,25 +66,29 @@ def export_to_split_markdown(room_name, data):
 def process_file(file_path):
     """단일 파일을 백그라운드에서 파싱하고 데이터를 반환"""
     file_name = os.path.basename(file_path)
-    # 메모장 숨김 실행 및 텍스트 추출
-    raw_html = get_text_from_notepad_hidden(file_path)
-    if not raw_html: return None
-    
-    data = parse_mht_html(raw_html)
-    if not data: return None
-    
-    # [개선] 방 이름 결정: 메타데이터 우선, 실패 시 파일명에서 날짜 제거
-    room_name = data['metadata']['title']
-    if room_name == "N/A" or not room_name:
-        # 파일명에서 (YYYY-MM-DD) 형식 제거
-        room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
-        room_name = os.path.splitext(room_name)[0].strip()
-    
-    # 동일 대화방임에도 제목 뒤에 날짜가 붙어있는 경우 방지
-    room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
-    room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
-    
-    return {"room_name": room_name, "data": data, "file_name": file_name}
+    try:
+        # 1. 메모장 숨김 실행 및 텍스트 추출
+        raw_html = get_text_from_notepad_hidden(file_path)
+        if not raw_html:
+            return {"status": "fail", "file_name": file_name, "reason": "Notepad extraction failed"}
+        
+        # 2. HTML 파싱
+        data = parse_mht_html(raw_html)
+        if not data:
+            return {"status": "fail", "file_name": file_name, "reason": "HTML parsing failed"}
+        
+        # 3. 방 이름 정리
+        room_name = data['metadata']['title']
+        if room_name == "N/A" or not room_name:
+            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
+            room_name = os.path.splitext(room_name)[0].strip()
+        
+        room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
+        room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
+        
+        return {"status": "success", "room_name": room_name, "data": data, "file_name": file_name}
+    except Exception as e:
+        return {"status": "fail", "file_name": file_name, "reason": str(e)}
 
 def run_sync_parallel():
     files = [os.path.join(INPUT_DIR, f) for f in os.listdir(INPUT_DIR) if f.lower().endswith('.mht')]
@@ -91,18 +96,27 @@ def run_sync_parallel():
         print("처리할 MHT 파일이 없습니다.")
         return
 
-    print(f"총 {len(files)}개 파일 백그라운드 병렬 처리 시작...")
+    print(f"총 {len(files)}개 파일 처리 시작 (안정성 강화 모드)...")
     
-    # 1. 병렬 추출 및 파싱 (최대 4개 동시 처리 - 시스템 부하 고려)
+    # 병렬 개수를 2개로 제한하여 윈도우 UI 리소스 충돌 방지
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_to_file = {executor.submit(process_file, f): f for f in files}
         for future in concurrent.futures.as_completed(future_to_file):
-            res = future.result()
-            if res: results.append(res)
-            print(f"  - 완료: {os.path.basename(future_to_file[future])}")
+            file_name = os.path.basename(future_to_file[future])
+            try:
+                res = future.result()
+                if res and res['status'] == "success":
+                    results.append(res)
+                    print(f"  [성공] 추출 완료: {file_name} -> {res['room_name']}")
+                else:
+                    print(f"  [실패] {file_name}: {res.get('reason', 'Unknown error')}")
+            except Exception as e:
+                print(f"  [에러] {file_name}: {e}")
 
-    # 2. 결과 순차 병합 (데이터 무결성을 위해 병합은 순차 진행)
+    # 2. 결과 순차 병합 및 파일 저장
+    print("\n데이터 병합 및 마크다운 생성 중...")
+    processed_rooms = set()
     for res in results:
         room_name, data = res['room_name'], res['data']
         json_path = os.path.join(DATA_DIR, f"{room_name}.json")
@@ -120,9 +134,12 @@ def run_sync_parallel():
             json.dump(final_data, f, ensure_ascii=False, indent=2)
         
         export_to_split_markdown(room_name, final_data)
-        print(f"[병합 완료] {room_name}: 신규 {added}개 메시지 추가됨.")
+        processed_rooms.add(room_name)
+        print(f"  - 병합 완료: {room_name} (신규 {added}개, 총 {len(merged_messages)}개)")
+
+    print(f"\n[최종 요약] 처리된 대화방: {len(processed_rooms)}개")
 
 if __name__ == "__main__":
     start_time = datetime.now()
     run_sync_parallel()
-    print(f"\n[최종 완료] 소요 시간: {datetime.now() - start_time}")
+    print(f"[완료] 전체 소요 시간: {datetime.now() - start_time}")
