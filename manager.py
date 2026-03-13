@@ -65,49 +65,56 @@ def export_to_split_markdown(room_name, data):
 def process_file(file_path):
     """단일 파일을 순차적으로 파싱하고 결과를 즉시 저장/병합"""
     file_name = os.path.basename(file_path)
-    try:
-        # 1. 텍스트 추출 (숨김 모드)
-        raw_html = get_text_from_notepad_hidden(file_path)
-        if not raw_html:
-            print(f"  [실패] 메모리 추출 실패: {file_name}")
-            return False
-        
-        # 2. 파싱
-        data = parse_mht_html(raw_html)
-        if not data:
-            print(f"  [실패] HTML 파싱 실패: {file_name}")
-            return False
-        
-        # 3. 방 이름 결정 및 정제
-        room_name = data['metadata']['title']
-        if room_name == "N/A" or not room_name:
-            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
-            room_name = os.path.splitext(room_name)[0].strip()
-        room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
-        room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
-        
-        # 4. 데이터 병합 (JSON)
-        json_path = os.path.join(DATA_DIR, f"{room_name}.json")
-        existing_data = {"metadata": data['metadata'], "messages": []}
-        if os.path.exists(json_path):
-            with open(json_path, 'r', encoding='utf-8') as f:
-                try: existing_data = json.load(f)
-                except: pass
-        
-        merged_messages, added = merge_messages(existing_data['messages'], data['messages'])
-        final_data = {"metadata": data['metadata'], "messages": merged_messages}
-        
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(final_data, f, ensure_ascii=False, indent=2)
-        
-        # 5. 마크다운 생성
-        export_to_split_markdown(room_name, final_data)
-        print(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
-        return True
-        
-    except Exception as e:
-        print(f"  [에러] {file_name} 처리 중 예외 발생: {e}")
-        return False
+    
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            if attempt > 1:
+                print(f"  - [재시도 {attempt}/{max_retries}] {file_name}")
+                time.sleep(1) # 재시도 전 대기
+
+            # 1. 텍스트 추출
+            raw_html = get_text_from_notepad_hidden(file_path)
+            if not raw_html:
+                continue # 다음 재시도로
+            
+            # 2. 파싱
+            data = parse_mht_html(raw_html)
+            if not data:
+                continue # 다음 재시도로
+            
+            # 3. 방 이름 결정 및 정제
+            room_name = data['metadata']['title']
+            if room_name == "N/A" or not room_name:
+                room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
+                room_name = os.path.splitext(room_name)[0].strip()
+            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
+            room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
+            
+            # 4. 데이터 병합 (JSON)
+            json_path = os.path.join(DATA_DIR, f"{room_name}.json")
+            existing_data = {"metadata": data['metadata'], "messages": []}
+            if os.path.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    try: existing_data = json.load(f)
+                    except: pass
+            
+            merged_messages, added = merge_messages(existing_data['messages'], data['messages'])
+            final_data = {"metadata": data['metadata'], "messages": merged_messages}
+            
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump(final_data, f, ensure_ascii=False, indent=2)
+            
+            # 5. 마크다운 생성
+            export_to_split_markdown(room_name, final_data)
+            print(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
+            return True
+            
+        except Exception as e:
+            print(f"  [에러] 시도 {attempt}: {e}")
+            
+    print(f"  [최종 실패] {file_name}")
+    return False
 
 def run_sync_sequential():
     files = [os.path.join(INPUT_DIR, f) for f in os.listdir(INPUT_DIR) if f.lower().endswith('.mht')]
@@ -115,14 +122,13 @@ def run_sync_sequential():
         print("처리할 MHT 파일이 없습니다.")
         return
 
-    print(f"총 {len(files)}개 파일 순차 처리 시작 (안정성 우선)...")
+    print(f"총 {len(files)}개 파일 순차 처리 시작 (재시도 로직 포함)...")
     success_count = 0
     
     for i, f in enumerate(files):
         print(f"[{i+1}/{len(files)}] 처리 중: {os.path.basename(f)}")
         if process_file(f):
             success_count += 1
-        # 프로세스 및 OS 자원 정리를 위해 짧은 휴식
         time.sleep(0.5)
 
     print(f"\n[최종 요약] 전체 {len(files)}개 중 {success_count}개 성공 완료.")
