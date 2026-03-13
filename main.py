@@ -5,6 +5,7 @@ import win32gui
 import win32con
 import ctypes
 import subprocess
+import html
 from bs4 import BeautifulSoup
 
 def get_text_from_notepad_memory(file_path):
@@ -55,63 +56,109 @@ def get_text_from_notepad_memory(file_path):
         
     return content
 
+def parse_table_to_markdown(table_tag):
+    """
+    HTML table 태그를 Markdown 표 형식으로 변환합니다.
+    """
+    rows = []
+    for tr in table_tag.find_all('tr'):
+        cells = []
+        for td in tr.find_all(['td', 'th']):
+            # 셀 내부 개행은 <br>로 치환
+            c_text = td.get_text('\n', strip=True).replace('\n', '<br>')
+            cells.append(c_text.replace('|', r'\|'))
+        
+        if not any(cells): continue
+        rows.append(f"| {' | '.join(cells)} |")
+        if len(rows) == 1:
+            rows.append(f"| {' | '.join(['---'] * len(cells))} |")
+            
+    return "\n".join(rows)
+
 def parse_mht_html(html_source):
     """
-    추출된 HTML 소스에서 제목, 참석자, 시간을 파싱합니다.
-    접두어(제목 :, 참석자... :)를 제거합니다.
+    추출된 HTML 소스에서 대화방 정보 및 모든 메시지를 파싱합니다.
     """
     if not html_source:
         return None
         
     soup = BeautifulSoup(html_source, 'lxml')
     
-    # 1. 제목 및 참석자 파싱 (chat_title 클래스의 dl)
+    # 1. 메타데이터 파싱
+    metadata = {"title": "N/A", "participants": "N/A", "start_date": "N/A"}
     chat_title_dl = soup.find('dl', class_='chat_title')
-    title = "N/A"
-    participants = "N/A"
-    
     if chat_title_dl:
-        # 제목 추출 및 정제 (첫 번째 dt)
         dt_tag = chat_title_dl.find('dt')
         if dt_tag:
-            raw_title = dt_tag.get_text(strip=True)
-            # "제목 :" 패턴 제거
-            title = re.sub(r'^제목\s*:\s*', '', raw_title).strip()
-            
-        # 참석자 추출 및 정제 (첫 번째 dd)
+            metadata["title"] = re.sub(r'^제목\s*:\s*', '', dt_tag.get_text(strip=True)).strip()
         dd_tag = chat_title_dl.find('dd')
         if dd_tag:
-            raw_participants = dd_tag.get_text(strip=True)
-            # "참석자(숫자) :" 또는 "참석자 :" 패턴 제거
-            participants = re.sub(r'^참석자(\(\d+\))?\s*:\s*', '', raw_participants).strip()
+            metadata["participants"] = re.sub(r'^참석자(\(\d+\))?\s*:\s*', '', dd_tag.get_text(strip=True)).strip()
 
-    # 2. 대화 시작 시간 파싱
-    start_time = "N/A"
+    # 시작 시간에서 날짜 부분만 추출 (예: 2026년 3월 13일 금요일)
     time_wrap = soup.find('div', class_='im_time_wrap')
     if time_wrap:
-        im_time = time_wrap.find('div', class_='im_time')
-        if im_time:
-            corner_c = im_time.find('span', class_='corner_C')
-            if corner_c:
-                start_time = corner_c.get_text(strip=True)
+        corner_c = time_wrap.find('span', class_='corner_C')
+        if corner_c:
+            raw_time = corner_c.get_text(strip=True)
+            date_match = re.search(r'^(\d{4}년 \d{1,2}월 \d{1,2}일 \w+요일)', raw_time)
+            if date_match:
+                metadata["start_date"] = date_match.group(1)
+
+    # 2. 메시지 파싱
+    messages = []
+    # li 태그 중 대화 내용을 포함하는 것들을 찾음 (userYou, userMe 등)
+    chat_items = soup.find_all('li', class_=re.compile(r'user(You|Me)'))
+    
+    for item in chat_items:
+        # 발신자 정보 추출
+        author_div = item.find('div', class_='author')
+        sender = "N/A"
+        msg_time = "N/A"
+        
+        if author_div:
+            name_span = author_div.find('span', class_='name')
+            if name_span:
+                sender = name_span.get_text(strip=True).rstrip('/')
+            
+            date_span = author_div.find('span', class_='date')
+            if date_span:
+                # [10:57]: -> 10:57
+                msg_time = re.sub(r'[\[\]:]', '', date_span.get_text(strip=True)).strip()
+
+        # 메시지 내용 추출
+        message_div = item.find('div', class_='message')
+        content = ""
+        if message_div:
+            # 내부에 표가 있는지 확인
+            table = message_div.find('table')
+            if table:
+                content = parse_table_to_markdown(table)
+            else:
+                # 일반 텍스트 (HTML 엔티티 변환 포함)
+                content = message_div.get_text('\n', strip=True)
+
+        if sender != "N/A" or content:
+            messages.append({
+                "date": metadata["start_date"],
+                "sender": sender,
+                "time": msg_time,
+                "content": content
+            })
 
     return {
-        "title": title,
-        "participants": participants,
-        "start_time": start_time
+        "metadata": metadata,
+        "messages": messages
     }
 
 if __name__ == "__main__":
     import glob
     files = glob.glob("inputs/*.mht")
     if files:
-        print(f"파일 처리 중: {files[0]}")
         raw_html = get_text_from_notepad_memory(files[0])
         if raw_html:
-            result = parse_mht_html(raw_html)
-            print("\n[파싱 결과 - 정제됨]")
-            print(f"제목: {result['title']}")
-            print(f"참석자: {result['participants']}")
-            print(f"시작 시간: {result['start_time']}")
-        else:
-            print("데이터 추출 실패")
+            data = parse_mht_html(raw_html)
+            print(f"\n[파싱 결과] {data['metadata']['title']}")
+            print(f"메시지 수: {len(data['messages'])}개")
+            if data['messages']:
+                print(f"마지막 메시지 예시: {data['messages'][-1]['sender']}: {data['messages'][-1]['content'][:30]}...")
