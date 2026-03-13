@@ -1,8 +1,9 @@
 import os
 import json
 import re
+import win32com.client as win32
 from datetime import datetime
-from main import parse_word_to_json
+from main_html import parse_mht_via_html  # 새로운 HTML 파서 사용
 
 # 경로 설정
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,38 +55,29 @@ def export_to_markdown(room_name, data):
     
     current_date = ""
     for m in messages:
-        # 날짜가 바뀔 때마다 헤더 추가
         if m['date'] != current_date:
             current_date = m['date']
             md_content += f"\n### 📅 {current_date}\n\n"
         
-        # 메시지 출력 (발신자 강조)
         md_content += f"**[{m['sender']}]** ({m['time']})\n{m['content']}\n\n"
         
     output_path = os.path.join(OUTPUT_DIR, f"{room_name}.md")
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(md_content)
-    print(f"  - 마크다운 내보내기 완료: {output_path}")
 
-def process_file(file_path):
+def process_file(file_path, word_app):
     """단일 MHT 파일 처리 프로세스"""
     file_name = os.path.basename(file_path)
-    # 파일명 규칙: 대화방명(YYYY-MM-DD).mht 에서 대화방명 추출
     room_match = re.match(r'^(.*)\(\d{4}-\d{2}-\d{2}\)', file_name)
     room_name = room_match.group(1).strip() if room_match else os.path.splitext(file_name)[0]
     
-    print(f"\n[Processing] {file_name} (대화방: {room_name})")
+    print(f"[Processing] {file_name}")
     
-    # 1. 새 데이터 파싱
-    try:
-        new_data = parse_word_to_json(file_path)
-    except Exception as e:
-        print(f"  - 파싱 실패: {e}")
-        return
-
+    # 1. 새 데이터 파싱 (HTML 변환 방식)
+    new_data = parse_mht_via_html(file_path, word_app=word_app)
     new_messages = new_data.get('messages', [])
     
-    # 2. 기존 데이터 로드 (JSON)
+    # 2. 기존 데이터 로드
     json_path = os.path.join(DATA_DIR, f"{room_name}.json")
     existing_data = {"metadata": new_data['metadata'], "messages": []}
     
@@ -96,32 +88,39 @@ def process_file(file_path):
     # 3. 데이터 병합 및 중복 제거
     merged_messages = merge_messages(existing_data['messages'], new_messages)
     
-    # 4. JSON 저장 (누적 데이터 업데이트)
+    # 4. JSON 저장
     final_data = {
-        "metadata": new_data['metadata'], 
+        "metadata": new_data['metadata'],
         "messages": merged_messages
     }
     
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(final_data, f, ensure_ascii=False, indent=2)
-    print(f"  - 누적 데이터 저장 완료: {json_path} (총 {len(merged_messages)}개 메시지)")
     
-    # 5. 최종 마크다운 내보내기
+    # 5. 마크다운 내보내기
     export_to_markdown(room_name, final_data)
 
 def run_sync():
-    """inputs/ 폴더의 모든 MHT 파일을 동기화"""
-    if not os.path.exists(INPUT_DIR):
-        os.makedirs(INPUT_DIR)
-        
+    """inputs/ 폴더의 모든 파일을 스캔하여 동기화"""
     files = [f for f in os.listdir(INPUT_DIR) if f.lower().endswith('.mht')]
     if not files:
-        print(f"'{INPUT_DIR}' 폴더에 처리할 MHT 파일이 없습니다.")
+        print("처리할 MHT 파일이 없습니다.")
         return
         
-    for f in files:
-        file_path = os.path.join(INPUT_DIR, f)
-        process_file(file_path)
+    print("Word 어플리케이션을 시작합니다 (HTML 변환 모드)...")
+    word_app = win32.Dispatch('Word.Application')
+    word_app.Visible = False
+    
+    try:
+        for f in files:
+            file_path = os.path.join(INPUT_DIR, f)
+            try:
+                process_file(file_path, word_app)
+            except Exception as e:
+                print(f"  - 에러 발생 ({f}): {e}")
+    finally:
+        print("Word 어플리케이션을 종료합니다.")
+        word_app.Quit()
 
 if __name__ == "__main__":
     run_sync()
