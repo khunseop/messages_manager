@@ -7,6 +7,7 @@ import ctypes
 import subprocess
 import html
 import win32process
+import copy
 from bs4 import BeautifulSoup
 
 def get_text_from_notepad_hidden(file_path):
@@ -68,12 +69,39 @@ def get_text_from_notepad_hidden(file_path):
         
     return content
 
+def clean_text_for_obsidian(element, is_table=False):
+    if not element: return ""
+    # 복사본 사용 (원본 soup 변형 방지)
+    el = copy.copy(element)
+    
+    # <br> 태그를 \n으로 변경하여 줄바꿈 유지
+    for br in el.find_all('br'):
+        br.replace_with('\n')
+    
+    # get_text() 사용 (구분자 없이 <a> 태그 등 인라인 태그 줄바꿈 방지)
+    text = el.get_text()
+    
+    # 각 줄의 앞뒤 공백 제거 후 다시 합침
+    lines = [l.strip() for l in text.split('\n')]
+    text = '\n'.join(lines).strip()
+    
+    # Obsidian에서 <, > 가 HTML로 오해받지 않도록 이스케이프 (태그 형식 보존 방지)
+    text = text.replace('<', '&lt;').replace('>', '&gt;')
+    
+    if is_table:
+        # 테이블 내 줄바꿈은 <br>로 치환
+        text = text.replace('\n', '<br>')
+        # 방금 치환한 <br>은 다시 태그로 복구
+        text = text.replace('&lt;br&gt;', '<br>')
+        
+    return text
+
 def parse_table_to_markdown(table_tag):
     rows = []
     for tr in table_tag.find_all('tr'):
         cells = []
         for td in tr.find_all(['td', 'th']):
-            c_text = td.get_text('\n', strip=True).replace('\n', '<br>')
+            c_text = clean_text_for_obsidian(td, is_table=True)
             cells.append(c_text.replace('|', r'\|'))
         if not any(cells): continue
         rows.append(f"| {' | '.join(cells)} |")
@@ -137,7 +165,10 @@ def parse_mht_html(html_source):
         content = ""
         if message_div:
             table = message_div.find('table')
-            content = parse_table_to_markdown(table) if table else message_div.get_text('\n', strip=True)
+            if table:
+                content = parse_table_to_markdown(table)
+            else:
+                content = clean_text_for_obsidian(message_div)
 
         if sender != "N/A" or content:
             messages.append({
