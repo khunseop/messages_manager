@@ -1,9 +1,8 @@
 import os
 import json
 import re
-import win32com.client as win32
 from datetime import datetime
-from main_html import parse_mht_via_html  # 새로운 HTML 파서 사용
+from main import parse_word_to_json
 
 # 경로 설정
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -65,16 +64,21 @@ def export_to_markdown(room_name, data):
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(md_content)
 
-def process_file(file_path, word_app):
+def process_file(file_path):
     """단일 MHT 파일 처리 프로세스"""
     file_name = os.path.basename(file_path)
     room_match = re.match(r'^(.*)\(\d{4}-\d{2}-\d{2}\)', file_name)
     room_name = room_match.group(1).strip() if room_match else os.path.splitext(file_name)[0]
     
-    print(f"[Processing] {file_name}")
+    print(f"\n[Processing] {file_name}")
     
-    # 1. 새 데이터 파싱 (HTML 변환 방식)
-    new_data = parse_mht_via_html(file_path, word_app=word_app)
+    # 1. 새 데이터 파싱 (Notepad 자동화 + BS4)
+    try:
+        new_data = parse_word_to_json(file_path)
+    except Exception as e:
+        print(f"  - 파싱 실패: {e}")
+        return
+
     new_messages = new_data.get('messages', [])
     
     # 2. 기존 데이터 로드
@@ -96,9 +100,11 @@ def process_file(file_path, word_app):
     
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(final_data, f, ensure_ascii=False, indent=2)
+    print(f"  - 누적 데이터 저장 완료 ({len(merged_messages)}개 메시지)")
     
     # 5. 마크다운 내보내기
     export_to_markdown(room_name, final_data)
+    print(f"  - 마크다운 업데이트 완료: {room_name}.md")
 
 def run_sync():
     """inputs/ 폴더의 모든 파일을 스캔하여 동기화"""
@@ -107,20 +113,11 @@ def run_sync():
         print("처리할 MHT 파일이 없습니다.")
         return
         
-    print("Word 어플리케이션을 시작합니다 (HTML 변환 모드)...")
-    word_app = win32.Dispatch('Word.Application')
-    word_app.Visible = False
-    
-    try:
-        for f in files:
-            file_path = os.path.join(INPUT_DIR, f)
-            try:
-                process_file(file_path, word_app)
-            except Exception as e:
-                print(f"  - 에러 발생 ({f}): {e}")
-    finally:
-        print("Word 어플리케이션을 종료합니다.")
-        word_app.Quit()
+    for f in files:
+        file_path = os.path.join(INPUT_DIR, f)
+        process_file(file_path)
 
 if __name__ == "__main__":
+    start_t = datetime.now()
     run_sync()
+    print(f"\n[완료] 총 소요시간: {datetime.now() - start_t}")

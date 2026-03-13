@@ -1,3 +1,4 @@
-pywin32==306
+pywinauto==0.6.8
+pyperclip==1.8.2
 beautifulsoup4==4.12.3
 lxml==5.1.0
