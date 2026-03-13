@@ -1,7 +1,6 @@
 import os
 import json
 import re
-import concurrent.futures
 import time
 from datetime import datetime
 from main import get_text_from_notepad_hidden, parse_mht_html
@@ -64,63 +63,31 @@ def export_to_split_markdown(room_name, data):
     return room_output_dir
 
 def process_file(file_path):
-    """단일 파일을 백그라운드에서 파싱하고 데이터를 반환"""
+    """단일 파일을 순차적으로 파싱하고 결과를 즉시 저장/병합"""
     file_name = os.path.basename(file_path)
     try:
-        # 1. 메모장 숨김 실행 및 텍스트 추출
+        # 1. 텍스트 추출 (숨김 모드)
         raw_html = get_text_from_notepad_hidden(file_path)
         if not raw_html:
-            return {"status": "fail", "file_name": file_name, "reason": "Notepad extraction failed"}
+            print(f"  [실패] 메모리 추출 실패: {file_name}")
+            return False
         
-        # 2. HTML 파싱
+        # 2. 파싱
         data = parse_mht_html(raw_html)
         if not data:
-            return {"status": "fail", "file_name": file_name, "reason": "HTML parsing failed"}
+            print(f"  [실패] HTML 파싱 실패: {file_name}")
+            return False
         
-        # 3. 방 이름 정리
+        # 3. 방 이름 결정 및 정제
         room_name = data['metadata']['title']
         if room_name == "N/A" or not room_name:
             room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
             room_name = os.path.splitext(room_name)[0].strip()
-        
         room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
         room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
         
-        return {"status": "success", "room_name": room_name, "data": data, "file_name": file_name}
-    except Exception as e:
-        return {"status": "fail", "file_name": file_name, "reason": str(e)}
-
-def run_sync_parallel():
-    files = [os.path.join(INPUT_DIR, f) for f in os.listdir(INPUT_DIR) if f.lower().endswith('.mht')]
-    if not files:
-        print("처리할 MHT 파일이 없습니다.")
-        return
-
-    print(f"총 {len(files)}개 파일 처리 시작 (안정성 강화 모드)...")
-    
-    # 병렬 개수를 2개로 제한하여 윈도우 UI 리소스 충돌 방지
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_file = {executor.submit(process_file, f): f for f in files}
-        for future in concurrent.futures.as_completed(future_to_file):
-            file_name = os.path.basename(future_to_file[future])
-            try:
-                res = future.result()
-                if res and res['status'] == "success":
-                    results.append(res)
-                    print(f"  [성공] 추출 완료: {file_name} -> {res['room_name']}")
-                else:
-                    print(f"  [실패] {file_name}: {res.get('reason', 'Unknown error')}")
-            except Exception as e:
-                print(f"  [에러] {file_name}: {e}")
-
-    # 2. 결과 순차 병합 및 파일 저장
-    print("\n데이터 병합 및 마크다운 생성 중...")
-    processed_rooms = set()
-    for res in results:
-        room_name, data = res['room_name'], res['data']
+        # 4. 데이터 병합 (JSON)
         json_path = os.path.join(DATA_DIR, f"{room_name}.json")
-        
         existing_data = {"metadata": data['metadata'], "messages": []}
         if os.path.exists(json_path):
             with open(json_path, 'r', encoding='utf-8') as f:
@@ -133,13 +100,34 @@ def run_sync_parallel():
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(final_data, f, ensure_ascii=False, indent=2)
         
+        # 5. 마크다운 생성
         export_to_split_markdown(room_name, final_data)
-        processed_rooms.add(room_name)
-        print(f"  - 병합 완료: {room_name} (신규 {added}개, 총 {len(merged_messages)}개)")
+        print(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
+        return True
+        
+    except Exception as e:
+        print(f"  [에러] {file_name} 처리 중 예외 발생: {e}")
+        return False
 
-    print(f"\n[최종 요약] 처리된 대화방: {len(processed_rooms)}개")
+def run_sync_sequential():
+    files = [os.path.join(INPUT_DIR, f) for f in os.listdir(INPUT_DIR) if f.lower().endswith('.mht')]
+    if not files:
+        print("처리할 MHT 파일이 없습니다.")
+        return
+
+    print(f"총 {len(files)}개 파일 순차 처리 시작 (안정성 우선)...")
+    success_count = 0
+    
+    for i, f in enumerate(files):
+        print(f"[{i+1}/{len(files)}] 처리 중: {os.path.basename(f)}")
+        if process_file(f):
+            success_count += 1
+        # 프로세스 및 OS 자원 정리를 위해 짧은 휴식
+        time.sleep(0.5)
+
+    print(f"\n[최종 요약] 전체 {len(files)}개 중 {success_count}개 성공 완료.")
 
 if __name__ == "__main__":
     start_time = datetime.now()
-    run_sync_parallel()
+    run_sync_sequential()
     print(f"[완료] 전체 소요 시간: {datetime.now() - start_time}")
