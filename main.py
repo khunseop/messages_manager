@@ -41,12 +41,17 @@ def load_config():
 
 config = load_config()
 
-# 경로 설정 적용
-INPUT_DIR = os.path.join(BASE_DIR, config['input_dir'])
-DATA_DIR = os.path.join(BASE_DIR, config['data_dir'])
-OUTPUT_DIR = os.path.join(BASE_DIR, config['output_dir'])
-ARCHIVE_DIR = os.path.join(BASE_DIR, config['archive_dir'])
-LOG_FILE = os.path.join(BASE_DIR, config['log_file'])
+# 경로 설정 적용 (상대 경로인 경우 BASE_DIR 결합, 절대 경로면 그대로 사용)
+def get_path(path_str):
+    if os.path.isabs(path_str):
+        return path_str
+    return os.path.abspath(os.path.join(BASE_DIR, path_str))
+
+INPUT_DIR = get_path(config['input_dir'])
+DATA_DIR = get_path(config['data_dir'])
+OUTPUT_DIR = get_path(config['output_dir'])
+ARCHIVE_DIR = get_path(config['archive_dir'])
+LOG_FILE = get_path(config['log_file'])
 MAX_RETRIES = config['max_retries']
 
 # 폴더 생성 보장
