@@ -157,3 +157,5 @@ archive/
 build/
 dist/
 *.spec
+run_task.bat
+register_task.bat
