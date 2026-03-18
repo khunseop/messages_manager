@@ -30,13 +30,19 @@ def load_config():
     check_paths = [CONFIG_PATH, os.path.join(os.getcwd(), 'config.json')]
     for p in check_paths:
         if os.path.exists(p):
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    cfg = json.load(f)
-                    for k, v in DEFAULT_CONFIG.items():
-                        if k not in cfg: cfg[k] = v
-                    return cfg, p
-            except: continue
+            # 인코딩 호환성: utf-8 시도 후 실패 시 cp949(ANSI) 시도
+            for enc in ['utf-8', 'cp949']:
+                try:
+                    with open(p, 'r', encoding=enc) as f:
+                        cfg = json.load(f)
+                        # 누락된 키 채우기
+                        for k, v in DEFAULT_CONFIG.items():
+                            if k not in cfg: cfg[k] = v
+                        return cfg, p
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                except Exception:
+                    break
     return DEFAULT_CONFIG, "INTERNAL_DEFAULT"
 
 config, config_source = load_config()
