@@ -26,20 +26,20 @@ DEFAULT_CONFIG = {
 }
 
 def load_config():
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                # 누락된 키가 있으면 기본값으로 채움
-                for k, v in DEFAULT_CONFIG.items():
-                    if k not in config:
-                        config[k] = v
-                return config
-        except Exception as e:
-            print(f"설정 파일 로드 실패: {e}. 기본값을 사용합니다.")
-    return DEFAULT_CONFIG
+    # 여러 경로 후보 확인 (실행 파일 위치, 현재 작업 디렉토리)
+    check_paths = [CONFIG_PATH, os.path.join(os.getcwd(), 'config.json')]
+    for p in check_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                    for k, v in DEFAULT_CONFIG.items():
+                        if k not in cfg: cfg[k] = v
+                    return cfg, p
+            except: continue
+    return DEFAULT_CONFIG, "INTERNAL_DEFAULT"
 
-config = load_config()
+config, config_source = load_config()
 
 # 경로 설정 적용 (상대 경로인 경우 BASE_DIR 결합, 절대 경로면 그대로 사용)
 def get_path(path_str):
@@ -200,6 +200,9 @@ def run_sync_sequential():
 
 if __name__ == "__main__":
     start_time = datetime.now()
-    logging.info("=== 작업 스케줄러 파싱 프로세스 시작 ===")
+    logging.info("=== MessageManager 프로세스 시작 ===")
+    logging.info(f"설정 파일 위치: {config_source}")
+    logging.info(f"입력 경로: {INPUT_DIR}")
+    logging.info(f"출력 경로: {OUTPUT_DIR}")
     run_sync_sequential()
     logging.info(f"[완료] 전체 소요 시간: {datetime.now() - start_time}\n")

@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 title MessageManager Setup Wizard
 
 echo ===================================================
-echo   MessageManager 초기 설정 마법사
+echo   MessageManager 초기 설정 마법사 (EXE 전용)
 echo ===================================================
 echo.
 
@@ -12,11 +12,6 @@ set /p IN_DIR="1. MHT 파일이 있는 폴더 경로 (예: C:\MHT\Inputs): "
 set /p OUT_DIR="2. 마크다운 저장 폴더 경로 (예: C:\MHT\Outputs): "
 set /p ARC_DIR="3. 처리 완료 파일 백업 폴더 경로 (예: C:\MHT\Archive): "
 set /p SCHED_TIME="4. 자동 실행 시간 (24시간 형식, 예: 19:00): "
-echo.
-echo [옵션] 파이썬 또는 실행 파일의 경로를 직접 지정하시겠습니까? 
-echo (그냥 엔터를 치면 기본 'python' 명령어를 사용합니다.)
-set /p PY_PATH="5. 실행 파일 경로 (필요 없으면 엔터): "
-if "!PY_PATH!"=="" set "PY_PATH=python"
 
 REM JSON용 경로 이스케이프 ( \ -> \\ )
 set "JS_IN=!IN_DIR:\=\\!"
@@ -40,9 +35,11 @@ echo [2/3] 실행용 배치 파일(run_task.bat) 생성 중...
 echo @echo off > run_task.bat
 echo cd /d "%%~dp0" >> run_task.bat
 echo if exist "MessageManager.exe" ( >> run_task.bat
-echo     start "" "MessageManager.exe" >> run_task.bat
+echo     "MessageManager.exe" >> run_task.bat
 echo ) else ( >> run_task.bat
-echo     "!PY_PATH!" main.py >> run_task.bat
+echo     echo [Error] MessageManager.exe 파일이 없습니다. >> run_task.bat
+echo     echo 빌드 후 생성된 exe 파일을 이 폴더로 옮겨주세요. >> run_task.bat
+echo     pause >> run_task.bat
 echo ) >> run_task.bat
 
 echo [3/3] 스케줄러 등록 스크립트(register_task.bat) 생성 중...
@@ -62,10 +59,8 @@ echo.
 echo ===================================================
 echo   설정이 완료되었습니다!
 echo.
-echo   - 사용된 실행 경로: !PY_PATH!
-echo   - 자동 실행 시간: !SCHED_TIME!
-echo.
-echo   1. 'register_task.bat'을 실행하여 스케줄러에 등록하세요.
-echo   2. 수동 실행은 'run_task.bat'을 사용하세요.
+echo   1. 빌드된 'MessageManager.exe'를 이 폴더로 복사하세요.
+echo   2. 'register_task.bat'을 실행하여 스케줄러에 등록하세요.
+echo   3. 수동 실행은 'run_task.bat'을 사용하세요.
 echo ===================================================
 pause
