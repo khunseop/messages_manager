@@ -144,12 +144,12 @@ def process_file(file_path):
             # 3. 방 이름 결정: 메타데이터 우선 사용 (파일명 날짜 무시)
             room_name = data['metadata']['title']
             if room_name == "N/A" or not room_name:
-                # 파일명에서 날짜 부분 제거하고 순수 방 이름만 추출
-                room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', file_name)
+                # 파일명에서 날짜 부분 제거하고 순수 방 이름만 추출 (예: (2026-03-23-172226-722) 등 대응)
+                room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}(?:-\d+)*\)', '', file_name)
                 room_name = os.path.splitext(room_name)[0].strip()
             
             # 메타데이터 제목 뒤에 날짜가 붙어있는 경우도 제거
-            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}\)', '', room_name).strip()
+            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}(?:-\d+)*\)', '', room_name).strip()
             room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
             
             # 4. 데이터 병합 (JSON)
