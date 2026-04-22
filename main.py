@@ -100,10 +100,8 @@ def merge_messages(existing_messages, new_messages):
     return merged, added_count
 
 def export_to_split_markdown(room_name, data):
-    """JSON 데이터를 대화방 폴더 내 날짜별 마크다운 파일로 분리 저장"""
+    """JSON 데이터를 출력 폴더 내 날짜별 마크다운 파일로 분리 저장"""
     meta, messages = data.get('metadata', {}), data.get('messages', [])
-    room_output_dir = os.path.join(OUTPUT_DIR, room_name)
-    os.makedirs(room_output_dir, exist_ok=True)
     
     date_groups = {}
     for m in messages:
@@ -111,7 +109,7 @@ def export_to_split_markdown(room_name, data):
         
     for date_key, msg_list in date_groups.items():
         file_date = clean_date_string(date_key)
-        output_path = os.path.join(room_output_dir, f"{file_date}_{room_name}.md")
+        output_path = os.path.join(OUTPUT_DIR, f"{file_date}_{room_name}.md")
         
         md_content = f"# {room_name} ({date_key})\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
         for m in msg_list:
@@ -121,7 +119,6 @@ def export_to_split_markdown(room_name, data):
             
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(md_content)
-    return room_output_dir
 
 def process_file(file_path):
     """단일 파일을 순차적으로 파싱하고 결과를 즉시 저장/병합"""
@@ -150,7 +147,8 @@ def process_file(file_path):
             
             # 메타데이터 제목 뒤에 날짜가 붙어있는 경우도 제거
             room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}(?:-\d+)*\)', '', room_name).strip()
-            room_name = re.sub(r'[\/:*?"<>|]', '_', room_name)
+            # 파일명 및 옵시디언 금칙어 제거 (#, ^, [, ], /, \, :, *, ?, ", <, >, |)
+            room_name = re.sub(r'[\\/:*?"<>|#^\[\]]', '', room_name).strip()
             
             # 4. 데이터 병합 (JSON)
             json_path = os.path.join(DATA_DIR, f"{room_name}.json")
