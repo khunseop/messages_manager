@@ -152,6 +152,7 @@ cython_debug/
 *.md
 !README.md
 !ordered_messenger_backup.md
+!obsidian_dashboard.md
 manager.log
 archive/
 build/

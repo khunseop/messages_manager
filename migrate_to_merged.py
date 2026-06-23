@@ -9,6 +9,7 @@ config.json 이 있으면 읽고, 없으면 기본값(data/json, outputs) 사용
 import os
 import re
 import json
+import shutil
 from datetime import datetime
 
 
@@ -135,6 +136,14 @@ def migrate():
             print(f"  [완료] {room_name}.md ({len(data.get('messages', []))}개 메시지)")
         except Exception as e:
             print(f"  [실패] {room_name}: {e}")
+
+    # 대시보드 파일을 outputs 폴더로 복사
+    dashboard_src = os.path.join(CWD, "obsidian_dashboard.md")
+    if os.path.exists(dashboard_src):
+        shutil.copy2(dashboard_src, os.path.join(output_dir, "obsidian_dashboard.md"))
+        print("  [완료] obsidian_dashboard.md 복사됨")
+    else:
+        print("  [건너뜀] obsidian_dashboard.md 파일 없음 (스크립트와 같은 경로에 있어야 합니다)")
 
     print("\n마이그레이션 완료.")
 
