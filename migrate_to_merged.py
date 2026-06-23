@@ -12,6 +12,17 @@ import json
 from datetime import datetime
 
 
+def clean_date_string(date_str):
+    try:
+        match = re.search(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', date_str)
+        if match:
+            year, month, day = match.groups()
+            return f"{year}-{int(month):02d}-{int(day):02d}"
+    except Exception:
+        pass
+    return date_str.replace(' ', '_')
+
+
 CWD = os.getcwd()
 
 
@@ -60,14 +71,16 @@ def export_to_merged_markdown(output_dir, room_name, data):
             date_order.append(d)
         date_groups[d].append(m)
 
-    md = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
+    tags = " ".join(f"#message/{clean_date_string(d)}" for d in date_order)
+    md = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n- **태그**: {tags}\n\n---\n\n"
     for date_key in date_order:
+        iso_date = clean_date_string(date_key)
         md += f"## {date_key}\n\n"
         for m in date_groups[date_key]:
             content = m["content"]
             if content.strip().startswith("|"):
                 content = "\n" + content
-            md += f"**[{m['sender']}]** ({m['time']})\n{content}\n\n"
+            md += f"**{m['sender']}** ({iso_date} {m['time']})\n{content}\n\n"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(md)

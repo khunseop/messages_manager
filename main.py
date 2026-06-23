@@ -123,13 +123,15 @@ def export_to_merged_markdown(room_name, data):
             date_order.append(d)
         date_groups[d].append(m)
 
-    md_content = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
+    tags = " ".join(f"#message/{clean_date_string(d)}" for d in date_order)
+    md_content = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n- **태그**: {tags}\n\n---\n\n"
     for date_key in date_order:
+        iso_date = clean_date_string(date_key)
         md_content += f"## {date_key}\n\n"
         for m in date_groups[date_key]:
             content = m['content']
             if content.strip().startswith('|'): content = "\n" + content
-            md_content += f"**[{m['sender']}]** ({m['time']})\n{content}\n\n"
+            md_content += f"**{m['sender']}** ({iso_date} {m['time']})\n{content}\n\n"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(md_content)
