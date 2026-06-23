@@ -58,25 +58,19 @@ def cleanup_legacy_split_files(output_dir, room_name):
 
 
 def build_frontmatter(date_order, participants_str):
-    tag_set = []
-    seen_year = set()
-    seen_month = set()
-    for d in date_order:
-        iso = clean_date_string(d)
-        year, month = iso[:4], iso[:7]
-        if year not in seen_year:
-            tag_set.append(f"message/{year}")
-            seen_year.add(year)
-        if month not in seen_month:
-            tag_set.append(f"message/{month}")
-            seen_month.add(month)
-        tag_set.append(f"message/{iso}")
+    dates = [clean_date_string(d) for d in date_order]
+    date_lines = "\n".join(f"  - {d}" for d in dates)
 
-    for name in (p.strip() for p in participants_str.split(",") if p.strip() and p.strip() != "N/A"):
-        tag_set.append(f"sender/{name}")
+    names = [p.strip() for p in participants_str.split(",") if p.strip() and p.strip() != "N/A"]
+    participant_lines = "\n".join(f"  - {n}" for n in names)
 
-    tag_lines = "\n".join(f"  - {t}" for t in tag_set)
-    return f"---\ntags:\n{tag_lines}\nparticipants: {participants_str}\n---\n\n"
+    return (
+        f"---\n"
+        f"tags:\n  - message\n"
+        f"dates:\n{date_lines}\n"
+        f"participants:\n{participant_lines}\n"
+        f"---\n\n"
+    )
 
 
 def export_to_merged_markdown(output_dir, room_name, data):
