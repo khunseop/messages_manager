@@ -99,26 +99,42 @@ def merge_messages(existing_messages, new_messages):
             added_count += 1
     return merged, added_count
 
-def export_to_split_markdown(room_name, data):
-    """JSON 데이터를 출력 폴더 내 날짜별 마크다운 파일로 분리 저장"""
+def cleanup_legacy_split_files(room_name):
+    """날짜_방명.md 형식의 구형 파일 제거"""
+    pattern = re.compile(r'^\d{4}-\d{2}-\d{2}_' + re.escape(room_name) + r'\.md$')
+    for fname in os.listdir(OUTPUT_DIR):
+        if pattern.match(fname):
+            try:
+                os.remove(os.path.join(OUTPUT_DIR, fname))
+            except Exception as e:
+                logging.warning(f"  [구형 파일 삭제 실패] {fname}: {e}")
+
+def export_to_merged_markdown(room_name, data):
+    """JSON 데이터를 대화방별 단일 마크다운 파일로 저장 (날짜는 ## 헤더로 구분)"""
     meta, messages = data.get('metadata', {}), data.get('messages', [])
-    
+    output_path = os.path.join(OUTPUT_DIR, f"{room_name}.md")
+
     date_groups = {}
+    date_order = []
     for m in messages:
-        date_groups.setdefault(m['date'], []).append(m)
-        
-    for date_key, msg_list in date_groups.items():
-        file_date = clean_date_string(date_key)
-        output_path = os.path.join(OUTPUT_DIR, f"{file_date}_{room_name}.md")
-        
-        md_content = f"# {room_name} ({date_key})\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
-        for m in msg_list:
+        d = m['date']
+        if d not in date_groups:
+            date_groups[d] = []
+            date_order.append(d)
+        date_groups[d].append(m)
+
+    md_content = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
+    for date_key in date_order:
+        md_content += f"## {date_key}\n\n"
+        for m in date_groups[date_key]:
             content = m['content']
             if content.strip().startswith('|'): content = "\n" + content
             md_content += f"**[{m['sender']}]** ({m['time']})\n{content}\n\n"
-            
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(md_content)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(md_content)
+
+    cleanup_legacy_split_files(room_name)
 
 def process_file(file_path):
     """단일 파일을 순차적으로 파싱하고 결과를 즉시 저장/병합"""
@@ -164,8 +180,8 @@ def process_file(file_path):
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(final_data, f, ensure_ascii=False, indent=2)
             
-            # 5. 마크다운 생성 (내부 날짜별로 분리됨)
-            export_to_split_markdown(room_name, final_data)
+            # 5. 마크다운 생성 (대화방별 단일 파일, 날짜는 헤더로 구분)
+            export_to_merged_markdown(room_name, final_data)
             logging.info(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
             
             # 6. 처리 완료된 파일 아카이브로 이동
