@@ -109,6 +109,28 @@ def cleanup_legacy_split_files(room_name):
             except Exception as e:
                 logging.warning(f"  [구형 파일 삭제 실패] {fname}: {e}")
 
+def build_frontmatter(date_order, participants_str):
+    """YAML frontmatter 태그 목록 생성 (날짜 계층 + 발신자)"""
+    tag_set = []
+    seen_year = set()
+    seen_month = set()
+    for d in date_order:
+        iso = clean_date_string(d)
+        year, month = iso[:4], iso[:7]
+        if year not in seen_year:
+            tag_set.append(f"message/{year}")
+            seen_year.add(year)
+        if month not in seen_month:
+            tag_set.append(f"message/{month}")
+            seen_month.add(month)
+        tag_set.append(f"message/{iso}")
+
+    for name in (p.strip() for p in participants_str.split(',') if p.strip() and p.strip() != 'N/A'):
+        tag_set.append(f"sender/{name}")
+
+    tag_lines = "\n".join(f"  - {t}" for t in tag_set)
+    return f"---\ntags:\n{tag_lines}\nparticipants: {participants_str}\n---\n\n"
+
 def export_to_merged_markdown(room_name, data):
     """JSON 데이터를 대화방별 단일 마크다운 파일로 저장 (날짜는 ## 헤더로 구분)"""
     meta, messages = data.get('metadata', {}), data.get('messages', [])
@@ -123,8 +145,9 @@ def export_to_merged_markdown(room_name, data):
             date_order.append(d)
         date_groups[d].append(m)
 
-    tags = " ".join(f"#message/{clean_date_string(d)}" for d in date_order)
-    md_content = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n- **태그**: {tags}\n\n---\n\n"
+    participants = meta.get('participants', 'N/A')
+    frontmatter = build_frontmatter(date_order, participants)
+    md_content = frontmatter + f"# {room_name}\n\n- **참석자**: {participants}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
     for date_key in date_order:
         iso_date = clean_date_string(date_key)
         md_content += f"## {date_key}\n\n"

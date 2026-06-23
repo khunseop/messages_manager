@@ -57,6 +57,28 @@ def cleanup_legacy_split_files(output_dir, room_name):
                 print(f"    [경고] {fname} 삭제 실패: {e}")
 
 
+def build_frontmatter(date_order, participants_str):
+    tag_set = []
+    seen_year = set()
+    seen_month = set()
+    for d in date_order:
+        iso = clean_date_string(d)
+        year, month = iso[:4], iso[:7]
+        if year not in seen_year:
+            tag_set.append(f"message/{year}")
+            seen_year.add(year)
+        if month not in seen_month:
+            tag_set.append(f"message/{month}")
+            seen_month.add(month)
+        tag_set.append(f"message/{iso}")
+
+    for name in (p.strip() for p in participants_str.split(",") if p.strip() and p.strip() != "N/A"):
+        tag_set.append(f"sender/{name}")
+
+    tag_lines = "\n".join(f"  - {t}" for t in tag_set)
+    return f"---\ntags:\n{tag_lines}\nparticipants: {participants_str}\n---\n\n"
+
+
 def export_to_merged_markdown(output_dir, room_name, data):
     meta = data.get("metadata", {})
     messages = data.get("messages", [])
@@ -71,8 +93,9 @@ def export_to_merged_markdown(output_dir, room_name, data):
             date_order.append(d)
         date_groups[d].append(m)
 
-    tags = " ".join(f"#message/{clean_date_string(d)}" for d in date_order)
-    md = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n- **태그**: {tags}\n\n---\n\n"
+    participants = meta.get("participants", "N/A")
+    frontmatter = build_frontmatter(date_order, participants)
+    md = frontmatter + f"# {room_name}\n\n- **참석자**: {participants}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
     for date_key in date_order:
         iso_date = clean_date_string(date_key)
         md += f"## {date_key}\n\n"
