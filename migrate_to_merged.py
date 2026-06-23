@@ -1,31 +1,107 @@
 """
 기존 날짜별 분리 마크다운(YYYY-MM-DD_방명.md)을 대화방별 단일 파일(방명.md)로 통합하는 마이그레이션 스크립트.
 data/json/ 의 JSON이 source of truth이므로 JSON → 새 마크다운으로 재생성 후 구형 파일 삭제.
+
+모든 경로는 스크립트 실행 위치(CWD) 기준으로 결정된다.
+config.json 이 있으면 읽고, 없으면 기본값(data/json, outputs) 사용.
 """
 
 import os
-import sys
-
-# main.py 와 동일 경로에서 실행 가정
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from main import DATA_DIR, OUTPUT_DIR, export_to_merged_markdown, cleanup_legacy_split_files
+import re
 import json
+from datetime import datetime
+
+
+CWD = os.getcwd()
+
+
+def load_config():
+    cfg = {"data_dir": "data/json", "output_dir": "outputs"}
+    config_path = os.path.join(CWD, "config.json")
+    if os.path.exists(config_path):
+        for enc in ["utf-8", "cp949"]:
+            try:
+                with open(config_path, "r", encoding=enc) as f:
+                    loaded = json.load(f)
+                    cfg.update({k: v for k, v in loaded.items() if k in cfg})
+                break
+            except Exception:
+                continue
+    return cfg
+
+
+def resolve(path_str):
+    if os.path.isabs(path_str):
+        return path_str
+    return os.path.abspath(os.path.join(CWD, path_str))
+
+
+def cleanup_legacy_split_files(output_dir, room_name):
+    pattern = re.compile(r"^\d{4}-\d{2}-\d{2}_" + re.escape(room_name) + r"\.md$")
+    for fname in os.listdir(output_dir):
+        if pattern.match(fname):
+            try:
+                os.remove(os.path.join(output_dir, fname))
+            except Exception as e:
+                print(f"    [경고] {fname} 삭제 실패: {e}")
+
+
+def export_to_merged_markdown(output_dir, room_name, data):
+    meta = data.get("metadata", {})
+    messages = data.get("messages", [])
+    output_path = os.path.join(output_dir, f"{room_name}.md")
+
+    date_groups = {}
+    date_order = []
+    for m in messages:
+        d = m["date"]
+        if d not in date_groups:
+            date_groups[d] = []
+            date_order.append(d)
+        date_groups[d].append(m)
+
+    md = f"# {room_name}\n\n- **참석자**: {meta.get('participants', 'N/A')}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
+    for date_key in date_order:
+        md += f"## {date_key}\n\n"
+        for m in date_groups[date_key]:
+            content = m["content"]
+            if content.strip().startswith("|"):
+                content = "\n" + content
+            md += f"**[{m['sender']}]** ({m['time']})\n{content}\n\n"
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(md)
 
 
 def migrate():
-    json_files = [f for f in os.listdir(DATA_DIR) if f.endswith('.json')]
-    if not json_files:
-        print("data/json/ 에 JSON 파일이 없습니다.")
+    cfg = load_config()
+    data_dir = resolve(cfg["data_dir"])
+    output_dir = resolve(cfg["output_dir"])
+
+    if not os.path.isdir(data_dir):
+        print(f"JSON 폴더를 찾을 수 없습니다: {data_dir}")
         return
 
-    print(f"총 {len(json_files)}개 대화방 마이그레이션 시작...")
+    os.makedirs(output_dir, exist_ok=True)
+
+    json_files = [f for f in os.listdir(data_dir) if f.endswith(".json")]
+    if not json_files:
+        print(f"JSON 파일이 없습니다: {data_dir}")
+        return
+
+    print(f"실행 경로: {CWD}")
+    print(f"JSON 경로: {data_dir}")
+    print(f"출력 경로: {output_dir}")
+    print(f"총 {len(json_files)}개 대화방 마이그레이션 시작...\n")
+
     for fname in sorted(json_files):
         room_name = os.path.splitext(fname)[0]
-        json_path = os.path.join(DATA_DIR, fname)
+        json_path = os.path.join(data_dir, fname)
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            export_to_merged_markdown(room_name, data)
+            export_to_merged_markdown(output_dir, room_name, data)
+            cleanup_legacy_split_files(output_dir, room_name)
             print(f"  [완료] {room_name}.md ({len(data.get('messages', []))}개 메시지)")
         except Exception as e:
             print(f"  [실패] {room_name}: {e}")
