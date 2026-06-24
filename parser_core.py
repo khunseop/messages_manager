@@ -154,7 +154,7 @@ def parse_mht_html(html_source):
         sender, msg_time = "N/A", "N/A"
         if author_div:
             name_span = author_div.find('span', class_='name')
-            if name_span: sender = name_span.get_text(strip=True).rstrip('/')
+            if name_span: sender = name_span.get_text(strip=True).rstrip('/').strip('[]')
             date_span = author_div.find('span', class_='date')
             if date_span:
                 raw_time = date_span.get_text(strip=True)
