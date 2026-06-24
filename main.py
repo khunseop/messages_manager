@@ -128,6 +128,9 @@ def build_frontmatter(date_order, participants_str):
 def export_to_merged_markdown(room_name, data):
     """JSON 데이터를 대화방별 단일 마크다운 파일로 저장 (날짜는 ## 헤더로 구분)"""
     meta, messages = data.get('metadata', {}), data.get('messages', [])
+    if not messages:
+        return
+
     output_path = os.path.join(OUTPUT_DIR, f"{room_name}.md")
 
     date_groups = {}

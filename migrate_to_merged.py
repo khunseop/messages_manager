@@ -76,6 +76,9 @@ def build_frontmatter(date_order, participants_str):
 def export_to_merged_markdown(output_dir, room_name, data):
     meta = data.get("metadata", {})
     messages = data.get("messages", [])
+    if not messages:
+        return
+
     output_path = os.path.join(output_dir, f"{room_name}.md")
 
     date_groups = {}
