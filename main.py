@@ -157,6 +157,77 @@ def export_to_daily_markdown(room_name, data):
 
     cleanup_legacy_split_files(room_name)
 
+def generate_dashboard():
+    """data/json 전체를 스캔해 outputs/dashboard.md를 정적 현황판으로 갱신 (Dataview 미사용)"""
+    json_files = [f for f in os.listdir(DATA_DIR) if f.endswith('.json')]
+
+    rooms = []
+    participant_rooms = {}
+    for fname in json_files:
+        json_path = os.path.join(DATA_DIR, fname)
+        try:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        meta, messages = data.get('metadata', {}), data.get('messages', [])
+        if not messages:
+            continue
+
+        room_name = os.path.splitext(fname)[0]
+        dates = sorted({clean_date_string(m['date']) for m in messages})
+        names = [p.strip() for p in meta.get('participants', 'N/A').split(',') if p.strip() and p.strip() != 'N/A']
+
+        rooms.append({
+            'room': room_name,
+            'participants': names,
+            'message_count': len(messages),
+            'date_count': len(dates),
+            'last_date': dates[-1] if dates else 'N/A',
+            'mtime': os.path.getmtime(json_path),
+        })
+        for n in names:
+            participant_rooms.setdefault(n, set()).add(room_name)
+
+    if not rooms:
+        return
+
+    def room_link(r):
+        return f"[[{r['room']}/{r['last_date']}|{r['room']}]]"
+
+    rooms_by_mtime = sorted(rooms, key=lambda r: r['mtime'], reverse=True)
+    last_room = rooms_by_mtime[0]
+    total_messages = sum(r['message_count'] for r in rooms)
+
+    lines = [
+        "---", "tags:", "  - dashboard", "---", "",
+        "# 메시지 대시보드", "",
+        f"- **마지막 갱신**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- **최근 업데이트 대화방**: {room_link(last_room)} ({datetime.fromtimestamp(last_room['mtime']).strftime('%Y-%m-%d %H:%M:%S')})",
+        f"- **전체 대화방 수**: {len(rooms)}개",
+        f"- **전체 메시지 수**: {total_messages}개",
+        "",
+        "## 최근 업데이트된 대화방 (상위 10개)", "",
+        "| 대화방 | 최근 날짜 | 메시지 수 | 갱신 시각 |",
+        "|---|---|---|---|",
+    ]
+    for r in rooms_by_mtime[:10]:
+        lines.append(f"| {room_link(r)} | {r['last_date']} | {r['message_count']} | {datetime.fromtimestamp(r['mtime']).strftime('%Y-%m-%d %H:%M:%S')} |")
+
+    lines += ["", "## 대화방별 목록", "", "| 대화방 | 참석자 | 대화일수 | 메시지 수 | 최근 날짜 |", "|---|---|---|---|---|"]
+    for r in sorted(rooms, key=lambda r: r['room']):
+        lines.append(f"| {room_link(r)} | {', '.join(r['participants']) or 'N/A'} | {r['date_count']}일 | {r['message_count']} | {r['last_date']} |")
+
+    lines += ["", "## 참여자별 대화방", ""]
+    for name in sorted(participant_rooms.keys()):
+        links = ", ".join(room_link(r) for r in sorted(rooms, key=lambda r: r['room']) if r['room'] in participant_rooms[name])
+        lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방): {links}")
+
+    dashboard_path = os.path.join(OUTPUT_DIR, "dashboard.md")
+    with open(dashboard_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
 def process_file(file_path):
     """단일 파일을 순차적으로 파싱하고 결과를 즉시 저장/병합"""
     file_name = os.path.basename(file_path)
@@ -246,4 +317,5 @@ if __name__ == "__main__":
     logging.info(f"입력 경로: {INPUT_DIR}")
     logging.info(f"출력 경로: {OUTPUT_DIR}")
     run_sync_sequential()
+    generate_dashboard()
     logging.info(f"[완료] 전체 소요 시간: {datetime.now() - start_time}\n")
