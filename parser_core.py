@@ -109,10 +109,14 @@ def parse_table_to_markdown(table_tag):
             rows.append(f"| {' | '.join(['---'] * len(cells))} |")
     return "\n".join(rows)
 
+def normalize_name(name):
+    """이름 끝에 붙은 '(닉네임)' 형태를 제거해 같은 사람으로 취급되게 함"""
+    return re.sub(r'\s*[\(（].*?[\)）]\s*$', '', name).strip()
+
 def parse_mht_html(html_source):
     if not html_source: return None
     soup = BeautifulSoup(html_source, 'lxml')
-    
+
     metadata = {"title": "N/A", "participants": "N/A", "start_date": "N/A"}
     chat_title_dl = soup.find('dl', class_='chat_title')
     if chat_title_dl:
@@ -121,7 +125,8 @@ def parse_mht_html(html_source):
             metadata["title"] = re.sub(r'^제목\s*:\s*', '', dt_tag.get_text(strip=True)).strip()
         dd_tag = chat_title_dl.find('dd')
         if dd_tag:
-            metadata["participants"] = re.sub(r'^참석자(\(\d+\))?\s*:\s*', '', dd_tag.get_text(strip=True)).strip()
+            participants_raw = re.sub(r'^참석자(\(\d+\))?\s*:\s*', '', dd_tag.get_text(strip=True)).strip()
+            metadata["participants"] = ', '.join(normalize_name(n) for n in participants_raw.split(',') if n.strip())
 
     # 대화방 상단 날짜 정보 추출 (가장 중요)
     time_wrap = soup.find('div', class_='im_time_wrap')
@@ -154,7 +159,7 @@ def parse_mht_html(html_source):
         sender, msg_time = "N/A", "N/A"
         if author_div:
             name_span = author_div.find('span', class_='name')
-            if name_span: sender = name_span.get_text(strip=True).rstrip('/').strip('[]')
+            if name_span: sender = normalize_name(name_span.get_text(strip=True).rstrip('/').strip('[]'))
             date_span = author_div.find('span', class_='date')
             if date_span:
                 raw_time = date_span.get_text(strip=True)

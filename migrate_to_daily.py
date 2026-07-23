@@ -50,15 +50,12 @@ def resolve(path_str):
     return os.path.abspath(os.path.join(CWD, path_str))
 
 
-def build_frontmatter(room_name, iso_date, participants_str):
-    names = [p.strip() for p in participants_str.split(",") if p.strip() and p.strip() != "N/A"]
-    participant_lines = "\n".join(f"  - {n}" for n in names)
+def build_frontmatter(room_name, iso_date):
     return (
         f"---\n"
         f"tags:\n  - message\n"
         f"room: {room_name}\n"
         f"date: {iso_date}\n"
-        f"participants:\n{participant_lines}\n"
         f"---\n\n"
     )
 
@@ -80,7 +77,7 @@ def export_to_daily_markdown(output_dir, room_name, data):
     participants = meta.get("participants", "N/A")
     for date_key in date_order:
         iso_date = clean_date_string(date_key)
-        frontmatter = build_frontmatter(room_name, iso_date, participants)
+        frontmatter = build_frontmatter(room_name, iso_date)
         md = frontmatter + f"# {room_name} — {iso_date}\n\n- **참석자**: {participants}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
         for m in date_groups[date_key]:
             content = m["content"]
@@ -172,8 +169,10 @@ def generate_dashboard(data_dir, output_dir):
 
     lines += ["", "## 참여자별 대화방", ""]
     for name in sorted(participant_rooms.keys()):
-        links = ", ".join(room_link(r) for r in sorted(rooms, key=lambda r: r["room"]) if r["room"] in participant_rooms[name])
-        lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방): {links}")
+        lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방)")
+        for r in sorted(rooms, key=lambda r: r["room"]):
+            if r["room"] in participant_rooms[name]:
+                lines.append(f"  - {room_link(r)}")
 
     with open(os.path.join(output_dir, "dashboard.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")

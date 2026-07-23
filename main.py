@@ -99,17 +99,13 @@ def merge_messages(existing_messages, new_messages):
             added_count += 1
     return merged, added_count
 
-def build_frontmatter(room_name, iso_date, participants_str):
-    """YAML frontmatter 생성 — tags는 message 고정, room/date/참석자는 별도 property"""
-    names = [p.strip() for p in participants_str.split(',') if p.strip() and p.strip() != 'N/A']
-    participant_lines = "\n".join(f"  - {n}" for n in names)
-
+def build_frontmatter(room_name, iso_date):
+    """YAML frontmatter 생성 — tags는 message 고정, room/date만 별도 property (participants는 인원이 많으면 지저분해 보여 본문에만 표기)"""
     return (
         f"---\n"
         f"tags:\n  - message\n"
         f"room: {room_name}\n"
         f"date: {iso_date}\n"
-        f"participants:\n{participant_lines}\n"
         f"---\n\n"
     )
 
@@ -131,7 +127,7 @@ def export_to_daily_markdown(room_name, data):
     participants = meta.get('participants', 'N/A')
     for date_key in date_order:
         iso_date = clean_date_string(date_key)
-        frontmatter = build_frontmatter(room_name, iso_date, participants)
+        frontmatter = build_frontmatter(room_name, iso_date)
         md_content = frontmatter + f"# {room_name} — {iso_date}\n\n- **참석자**: {participants}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
         for m in date_groups[date_key]:
             content = m['content']
@@ -206,8 +202,10 @@ def generate_dashboard():
 
     lines += ["", "## 참여자별 대화방", ""]
     for name in sorted(participant_rooms.keys()):
-        links = ", ".join(room_link(r) for r in sorted(rooms, key=lambda r: r['room']) if r['room'] in participant_rooms[name])
-        lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방): {links}")
+        lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방)")
+        for r in sorted(rooms, key=lambda r: r['room']):
+            if r['room'] in participant_rooms[name]:
+                lines.append(f"  - {room_link(r)}")
 
     dashboard_path = os.path.join(OUTPUT_DIR, "dashboard.md")
     with open(dashboard_path, "w", encoding="utf-8") as f:
@@ -240,8 +238,9 @@ def process_file(file_path):
             
             # 메타데이터 제목 뒤에 날짜가 붙어있는 경우도 제거
             room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}(?:-\d+)*\)', '', room_name).strip()
-            # 파일명 및 옵시디언 금칙어 제거 (#, ^, [, ], /, \, :, *, ?, ", <, >, |)
-            room_name = re.sub(r'[\\/:*?"<>|#^\[\]]', '', room_name).strip()
+            # 파일명 및 옵시디언 금칙어 치환 (#, ^, [, ], /, \, :, *, ?, ", <, >, | -> _)
+            # 경로 구분자(/)가 그대로 남으면 파일 경로로 잘못 해석될 수 있어 제거 대신 치환
+            room_name = re.sub(r'[\\/:*?"<>|#^\[\]]', '_', room_name).strip()
             
             # 4. 데이터 병합 (JSON)
             json_path = os.path.join(DATA_DIR, f"{room_name}.json")
