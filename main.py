@@ -99,16 +99,6 @@ def merge_messages(existing_messages, new_messages):
             added_count += 1
     return merged, added_count
 
-def cleanup_legacy_split_files(room_name):
-    """날짜_방명.md 형식의 구형 파일 제거"""
-    pattern = re.compile(r'^\d{4}-\d{2}-\d{2}_' + re.escape(room_name) + r'\.md$')
-    for fname in os.listdir(OUTPUT_DIR):
-        if pattern.match(fname):
-            try:
-                os.remove(os.path.join(OUTPUT_DIR, fname))
-            except Exception as e:
-                logging.warning(f"  [구형 파일 삭제 실패] {fname}: {e}")
-
 def build_frontmatter(room_name, iso_date, participants_str):
     """YAML frontmatter 생성 — tags는 message 고정, room/date/참석자는 별도 property"""
     names = [p.strip() for p in participants_str.split(',') if p.strip() and p.strip() != 'N/A']
@@ -124,13 +114,10 @@ def build_frontmatter(room_name, iso_date, participants_str):
     )
 
 def export_to_daily_markdown(room_name, data):
-    """JSON 데이터를 대화방 폴더 안 날짜별 마크다운 파일로 저장"""
+    """JSON 데이터를 날짜_방명.md 형식의 마크다운 파일로 저장 (outputs/ 바로 아래, 폴더 없음)"""
     meta, messages = data.get('metadata', {}), data.get('messages', [])
     if not messages:
         return
-
-    room_dir = os.path.join(OUTPUT_DIR, room_name)
-    os.makedirs(room_dir, exist_ok=True)
 
     date_groups = {}
     date_order = []
@@ -151,11 +138,9 @@ def export_to_daily_markdown(room_name, data):
             if content.strip().startswith('|'): content = "\n" + content
             md_content += f"**{m['sender']}** ({iso_date} {m['time']})\n{content}\n\n"
 
-        output_path = os.path.join(room_dir, f"{iso_date}.md")
+        output_path = os.path.join(OUTPUT_DIR, f"{iso_date}_{room_name}.md")
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(md_content)
-
-    cleanup_legacy_split_files(room_name)
 
 def generate_dashboard():
     """data/json 전체를 스캔해 outputs/dashboard.md를 정적 현황판으로 갱신 (Dataview 미사용)"""
@@ -194,7 +179,7 @@ def generate_dashboard():
         return
 
     def room_link(r):
-        return f"[[{r['room']}/{r['last_date']}|{r['room']}]]"
+        return f"[[{r['last_date']}_{r['room']}|{r['room']}]]"
 
     rooms_by_mtime = sorted(rooms, key=lambda r: r['mtime'], reverse=True)
     last_room = rooms_by_mtime[0]
@@ -272,7 +257,7 @@ def process_file(file_path):
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(final_data, f, ensure_ascii=False, indent=2)
             
-            # 5. 마크다운 생성 (대화방 폴더 안에 날짜별 파일로 저장)
+            # 5. 마크다운 생성 (날짜_방명.md 형식으로 저장)
             export_to_daily_markdown(room_name, final_data)
             logging.info(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
             

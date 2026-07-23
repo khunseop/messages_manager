@@ -1,7 +1,7 @@
 """
-기존 대화방별 통합 마크다운(방명.md)을 대화방 폴더 + 날짜별 마크다운(방명/YYYY-MM-DD.md)으로
-재생성하는 마이그레이션 스크립트.
-data/json/ 의 JSON이 source of truth이므로 JSON -> 새 구조로 재생성 후 구형 통합 파일을 삭제하고,
+기존 대화방별 통합 마크다운(방명.md) 또는 대화방 폴더 구조(방명/YYYY-MM-DD.md)를
+날짜_방명.md 형식의 평면 구조로 재생성하는 마이그레이션 스크립트.
+data/json/ 의 JSON이 source of truth이므로 JSON -> 새 구조로 재생성 후 구형 파일/폴더를 삭제하고,
 outputs/dashboard.md 현황판도 함께 갱신한다.
 
 모든 경로는 스크립트 실행 위치(CWD) 기준으로 결정된다.
@@ -11,6 +11,7 @@ config.json 이 있으면 읽고, 없으면 기본값(data/json, outputs) 사용
 import os
 import re
 import json
+import shutil
 from datetime import datetime
 
 
@@ -67,9 +68,6 @@ def export_to_daily_markdown(output_dir, room_name, data):
     if not messages:
         return
 
-    room_dir = os.path.join(output_dir, room_name)
-    os.makedirs(room_dir, exist_ok=True)
-
     date_groups = {}
     date_order = []
     for m in messages:
@@ -90,18 +88,25 @@ def export_to_daily_markdown(output_dir, room_name, data):
                 content = "\n" + content
             md += f"**{m['sender']}** ({iso_date} {m['time']})\n{content}\n\n"
 
-        with open(os.path.join(room_dir, f"{iso_date}.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(output_dir, f"{iso_date}_{room_name}.md"), "w", encoding="utf-8") as f:
             f.write(md)
 
 
-def cleanup_old_merged_file(output_dir, room_name):
-    """구 구조(방명.md 단일 파일)를 새 폴더 구조로 옮긴 뒤 남은 잔재 삭제"""
-    old_path = os.path.join(output_dir, f"{room_name}.md")
-    if os.path.exists(old_path):
+def cleanup_old_structures(output_dir, room_name):
+    """구 구조(방명.md 단일 파일, 방명/ 폴더)를 새 평면 구조로 옮긴 뒤 남은 잔재 삭제"""
+    old_merged_path = os.path.join(output_dir, f"{room_name}.md")
+    if os.path.exists(old_merged_path):
         try:
-            os.remove(old_path)
+            os.remove(old_merged_path)
         except Exception as e:
             print(f"    [경고] {room_name}.md 삭제 실패: {e}")
+
+    old_room_dir = os.path.join(output_dir, room_name)
+    if os.path.isdir(old_room_dir):
+        try:
+            shutil.rmtree(old_room_dir)
+        except Exception as e:
+            print(f"    [경고] {room_name}/ 폴더 삭제 실패: {e}")
 
 
 def generate_dashboard(data_dir, output_dir):
@@ -140,7 +145,7 @@ def generate_dashboard(data_dir, output_dir):
         return
 
     def room_link(r):
-        return f"[[{r['room']}/{r['last_date']}|{r['room']}]]"
+        return f"[[{r['last_date']}_{r['room']}|{r['room']}]]"
 
     rooms_by_mtime = sorted(rooms, key=lambda r: r["mtime"], reverse=True)
     last_room = rooms_by_mtime[0]
@@ -202,8 +207,8 @@ def migrate():
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             export_to_daily_markdown(output_dir, room_name, data)
-            cleanup_old_merged_file(output_dir, room_name)
-            print(f"  [완료] {room_name}/ ({len(data.get('messages', []))}개 메시지)")
+            cleanup_old_structures(output_dir, room_name)
+            print(f"  [완료] {room_name} ({len(data.get('messages', []))}개 메시지)")
         except Exception as e:
             print(f"  [실패] {room_name}: {e}")
 
