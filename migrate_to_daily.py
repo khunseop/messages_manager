@@ -50,6 +50,97 @@ def resolve(path_str):
     return os.path.abspath(os.path.join(CWD, path_str))
 
 
+def load_room_aliases():
+    """room_aliases.json: {"옛 제목": "canonical 방이름"} — 참여자 변동 등으로 조각난 이력 통합용"""
+    path = os.path.join(CWD, "room_aliases.json")
+    if os.path.exists(path):
+        for enc in ["utf-8", "cp949"]:
+            try:
+                with open(path, "r", encoding=enc) as f:
+                    return json.load(f)
+            except Exception:
+                continue
+    return {}
+
+
+def get_unique_key(msg):
+    return (msg.get("date", "N/A"), msg.get("sender", "N/A"), msg.get("time", "N/A"), msg.get("content", "").strip())
+
+
+def merge_messages(existing_messages, new_messages):
+    seen = set(get_unique_key(m) for m in existing_messages)
+    merged = list(existing_messages)
+    for m in new_messages:
+        key = get_unique_key(m)
+        if key not in seen:
+            seen.add(key)
+            merged.append(m)
+    return merged
+
+
+def consolidate_aliased_rooms(data_dir, output_dir, aliases):
+    """room_aliases.json에 등록된 옛 이름의 JSON들을 canonical 이름 하나로 병합"""
+    if not aliases:
+        return
+
+    json_files = [f for f in os.listdir(data_dir) if f.endswith(".json")]
+    groups = {}
+    for fname in json_files:
+        room_name = os.path.splitext(fname)[0]
+        canonical = aliases.get(room_name, room_name)
+        groups.setdefault(canonical, []).append(room_name)
+
+    for canonical, members in groups.items():
+        if len(members) == 1 and members[0] == canonical:
+            continue
+
+        merged_messages = []
+        participants = []
+        seen_names = set()
+        latest_meta, latest_mtime = {}, -1
+        for m in sorted(members):
+            path = os.path.join(data_dir, f"{m}.json")
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    d = json.load(f)
+            except Exception:
+                continue
+            merged_messages = merge_messages(merged_messages, d.get("messages", []))
+            names = [p.strip() for p in d.get("metadata", {}).get("participants", "").split(",") if p.strip() and p.strip() != "N/A"]
+            for n in names:
+                if n not in seen_names:
+                    seen_names.add(n)
+                    participants.append(n)
+            mtime = os.path.getmtime(path)
+            if mtime > latest_mtime:
+                latest_mtime, latest_meta = mtime, d.get("metadata", {})
+
+        merged_metadata = dict(latest_meta)
+        merged_metadata["title"] = canonical
+        merged_metadata["participants"] = ", ".join(participants) if participants else "N/A"
+
+        with open(os.path.join(data_dir, f"{canonical}.json"), "w", encoding="utf-8") as f:
+            json.dump({"metadata": merged_metadata, "messages": merged_messages}, f, ensure_ascii=False, indent=2)
+
+        for m in members:
+            if m == canonical:
+                continue
+            try:
+                os.remove(os.path.join(data_dir, f"{m}.json"))
+            except Exception as e:
+                print(f"    [경고] {m}.json 삭제 실패: {e}")
+            cleanup_old_structures(output_dir, m)
+            pattern = re.compile(r'^\d{4}-\d{2}-\d{2}_' + re.escape(m) + r'\.md$')
+            for out_fname in os.listdir(output_dir):
+                if pattern.match(out_fname):
+                    try:
+                        os.remove(os.path.join(output_dir, out_fname))
+                    except Exception as e:
+                        print(f"    [경고] {out_fname} 삭제 실패: {e}")
+
+        print(f"  [병합] {', '.join(sorted(members))} -> {canonical}.json ({len(merged_messages)}개 메시지)")
+
+
 def build_frontmatter(room_name, iso_date):
     return (
         f"---\n"
@@ -131,7 +222,9 @@ def generate_dashboard(data_dir, output_dir):
             "room": room_name,
             "participants": names,
             "message_count": len(messages),
+            "dates": dates,
             "date_count": len(dates),
+            "first_date": dates[0] if dates else "N/A",
             "last_date": dates[-1] if dates else "N/A",
             "mtime": os.path.getmtime(json_path),
         })
@@ -142,8 +235,13 @@ def generate_dashboard(data_dir, output_dir):
         return
 
     def room_link(r):
-        return f"[[{r['last_date']}_{r['room']}|{r['room']}]]"
+        """방 상세 섹션(헤딩)으로 이동하는 링크"""
+        return f"[[dashboard#{r['room']}|{r['room']}]]"
 
+    def date_link(r, d):
+        return f"[[{d}_{r['room']}|{d}]]"
+
+    rooms_sorted = sorted(rooms, key=lambda r: r["room"])
     rooms_by_mtime = sorted(rooms, key=lambda r: r["mtime"], reverse=True)
     last_room = rooms_by_mtime[0]
     total_messages = sum(r["message_count"] for r in rooms)
@@ -156,21 +254,31 @@ def generate_dashboard(data_dir, output_dir):
         f"- **전체 대화방 수**: {len(rooms)}개",
         f"- **전체 메시지 수**: {total_messages}개",
         "",
-        "## 최근 업데이트된 대화방 (상위 10개)", "",
-        "| 대화방 | 최근 날짜 | 메시지 수 | 갱신 시각 |",
-        "|---|---|---|---|",
+        "## 바로가기", "",
     ]
+    lines.append(", ".join(room_link(r) for r in rooms_sorted))
+
+    lines += ["", "## 최근 업데이트된 대화방 (상위 10개)", "",
+              "| 대화방 | 최근 날짜 | 메시지 수 | 갱신 시각 |", "|---|---|---|---|"]
     for r in rooms_by_mtime[:10]:
         lines.append(f"| {room_link(r)} | {r['last_date']} | {r['message_count']} | {datetime.fromtimestamp(r['mtime']).strftime('%Y-%m-%d %H:%M:%S')} |")
 
-    lines += ["", "## 대화방별 목록", "", "| 대화방 | 참석자 | 대화일수 | 메시지 수 | 최근 날짜 |", "|---|---|---|---|---|"]
-    for r in sorted(rooms, key=lambda r: r["room"]):
-        lines.append(f"| {room_link(r)} | {', '.join(r['participants']) or 'N/A'} | {r['date_count']}일 | {r['message_count']} | {r['last_date']} |")
+    lines += ["", "## 대화방 목록", "", "| 대화방 | 참석자 | 최초 날짜 | 최근 날짜 | 대화일수 | 메시지 수 |", "|---|---|---|---|---|---|"]
+    for r in rooms_sorted:
+        lines.append(f"| {room_link(r)} | {', '.join(r['participants']) or 'N/A'} | {r['first_date']} | {r['last_date']} | {r['date_count']}일 | {r['message_count']} |")
 
-    lines += ["", "## 참여자별 대화방", ""]
+    lines += ["", "## 대화방별 상세", ""]
+    for r in rooms_sorted:
+        lines.append(f"### {r['room']}")
+        lines.append(f"- **참석자**: {', '.join(r['participants']) or 'N/A'}")
+        lines.append(f"- **기간**: {r['first_date']} ~ {r['last_date']} ({r['date_count']}일, {r['message_count']}개 메시지)")
+        lines.append("- **날짜별 이력**: " + ", ".join(date_link(r, d) for d in r["dates"]))
+        lines.append("")
+
+    lines += ["## 참여자별 대화방", ""]
     for name in sorted(participant_rooms.keys()):
         lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방)")
-        for r in sorted(rooms, key=lambda r: r["room"]):
+        for r in rooms_sorted:
             if r["room"] in participant_rooms[name]:
                 lines.append(f"  - {room_link(r)}")
 
@@ -197,6 +305,14 @@ def migrate():
     print(f"실행 경로: {CWD}")
     print(f"JSON 경로: {data_dir}")
     print(f"출력 경로: {output_dir}")
+
+    aliases = load_room_aliases()
+    if aliases:
+        print(f"room_aliases.json 발견: {len(aliases)}개 별칭 규칙 적용, 조각난 이력 통합 시작...")
+        consolidate_aliased_rooms(data_dir, output_dir, aliases)
+        json_files = [f for f in os.listdir(data_dir) if f.endswith(".json")]
+        print()
+
     print(f"총 {len(json_files)}개 대화방 마이그레이션 시작...\n")
 
     for fname in sorted(json_files):

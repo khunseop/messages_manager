@@ -47,6 +47,25 @@ def load_config():
 
 config, config_source = load_config()
 
+# 대화방 이름 별칭 매핑 로드 (참여자 변동 등으로 제목이 바뀐 방을 같은 방으로 취급하기 위함)
+ROOM_ALIASES_PATH = os.path.join(BASE_DIR, 'room_aliases.json')
+
+def load_room_aliases():
+    check_paths = [ROOM_ALIASES_PATH, os.path.join(os.getcwd(), 'room_aliases.json')]
+    for p in check_paths:
+        if os.path.exists(p):
+            for enc in ['utf-8', 'cp949']:
+                try:
+                    with open(p, 'r', encoding=enc) as f:
+                        return json.load(f)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                except Exception:
+                    break
+    return {}
+
+ROOM_ALIASES = load_room_aliases()
+
 # 경로 설정 적용 (상대 경로인 경우 BASE_DIR 결합, 절대 경로면 그대로 사용)
 def get_path(path_str):
     if os.path.isabs(path_str):
@@ -164,7 +183,9 @@ def generate_dashboard():
             'room': room_name,
             'participants': names,
             'message_count': len(messages),
+            'dates': dates,
             'date_count': len(dates),
+            'first_date': dates[0] if dates else 'N/A',
             'last_date': dates[-1] if dates else 'N/A',
             'mtime': os.path.getmtime(json_path),
         })
@@ -175,8 +196,13 @@ def generate_dashboard():
         return
 
     def room_link(r):
-        return f"[[{r['last_date']}_{r['room']}|{r['room']}]]"
+        """방 상세 섹션(헤딩)으로 이동하는 링크"""
+        return f"[[dashboard#{r['room']}|{r['room']}]]"
 
+    def date_link(r, d):
+        return f"[[{d}_{r['room']}|{d}]]"
+
+    rooms_sorted = sorted(rooms, key=lambda r: r['room'])
     rooms_by_mtime = sorted(rooms, key=lambda r: r['mtime'], reverse=True)
     last_room = rooms_by_mtime[0]
     total_messages = sum(r['message_count'] for r in rooms)
@@ -189,21 +215,31 @@ def generate_dashboard():
         f"- **전체 대화방 수**: {len(rooms)}개",
         f"- **전체 메시지 수**: {total_messages}개",
         "",
-        "## 최근 업데이트된 대화방 (상위 10개)", "",
-        "| 대화방 | 최근 날짜 | 메시지 수 | 갱신 시각 |",
-        "|---|---|---|---|",
+        "## 바로가기", "",
     ]
+    lines.append(", ".join(room_link(r) for r in rooms_sorted))
+
+    lines += ["", "## 최근 업데이트된 대화방 (상위 10개)", "",
+              "| 대화방 | 최근 날짜 | 메시지 수 | 갱신 시각 |", "|---|---|---|---|"]
     for r in rooms_by_mtime[:10]:
         lines.append(f"| {room_link(r)} | {r['last_date']} | {r['message_count']} | {datetime.fromtimestamp(r['mtime']).strftime('%Y-%m-%d %H:%M:%S')} |")
 
-    lines += ["", "## 대화방별 목록", "", "| 대화방 | 참석자 | 대화일수 | 메시지 수 | 최근 날짜 |", "|---|---|---|---|---|"]
-    for r in sorted(rooms, key=lambda r: r['room']):
-        lines.append(f"| {room_link(r)} | {', '.join(r['participants']) or 'N/A'} | {r['date_count']}일 | {r['message_count']} | {r['last_date']} |")
+    lines += ["", "## 대화방 목록", "", "| 대화방 | 참석자 | 최초 날짜 | 최근 날짜 | 대화일수 | 메시지 수 |", "|---|---|---|---|---|---|"]
+    for r in rooms_sorted:
+        lines.append(f"| {room_link(r)} | {', '.join(r['participants']) or 'N/A'} | {r['first_date']} | {r['last_date']} | {r['date_count']}일 | {r['message_count']} |")
 
-    lines += ["", "## 참여자별 대화방", ""]
+    lines += ["", "## 대화방별 상세", ""]
+    for r in rooms_sorted:
+        lines.append(f"### {r['room']}")
+        lines.append(f"- **참석자**: {', '.join(r['participants']) or 'N/A'}")
+        lines.append(f"- **기간**: {r['first_date']} ~ {r['last_date']} ({r['date_count']}일, {r['message_count']}개 메시지)")
+        lines.append("- **날짜별 이력**: " + ", ".join(date_link(r, d) for d in r['dates']))
+        lines.append("")
+
+    lines += ["## 참여자별 대화방", ""]
     for name in sorted(participant_rooms.keys()):
         lines.append(f"- **{name}** ({len(participant_rooms[name])}개 대화방)")
-        for r in sorted(rooms, key=lambda r: r['room']):
+        for r in rooms_sorted:
             if r['room'] in participant_rooms[name]:
                 lines.append(f"  - {room_link(r)}")
 
@@ -235,13 +271,15 @@ def process_file(file_path):
                 # 파일명에서 날짜 부분 제거하고 순수 방 이름만 추출 (예: (2026-03-23-172226-722) 등 대응)
                 room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}(?:-\d+)*\)', '', file_name)
                 room_name = os.path.splitext(room_name)[0].strip()
-            
-            # 메타데이터 제목 뒤에 날짜가 붙어있는 경우도 제거
-            room_name = re.sub(r'\(\d{4}-\d{2}-\d{2}(?:-\d+)*\)', '', room_name).strip()
+
+            # 메타데이터 제목 뒤에 날짜가 잘못 붙는 경우 제거 (괄호 유무, 구분자 -/./ 무관)
+            room_name = re.sub(r'[\s_]*\(?\d{4}[-./]\d{1,2}[-./]\d{1,2}(?:[-_]?\d+)*\)?\s*$', '', room_name).strip()
             # 파일명 및 옵시디언 금칙어 치환 (#, ^, [, ], /, \, :, *, ?, ", <, >, | -> _)
             # 경로 구분자(/)가 그대로 남으면 파일 경로로 잘못 해석될 수 있어 제거 대신 치환
             room_name = re.sub(r'[\\/:*?"<>|#^\[\]]', '_', room_name).strip()
-            
+            # 참여자 변동 등으로 제목이 바뀐 경우, 수동 등록된 별칭으로 canonical 이름 통일
+            room_name = ROOM_ALIASES.get(room_name, room_name)
+
             # 4. 데이터 병합 (JSON)
             json_path = os.path.join(DATA_DIR, f"{room_name}.json")
             existing_data = {"metadata": data['metadata'], "messages": []}
