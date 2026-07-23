@@ -109,29 +109,28 @@ def cleanup_legacy_split_files(room_name):
             except Exception as e:
                 logging.warning(f"  [구형 파일 삭제 실패] {fname}: {e}")
 
-def build_frontmatter(date_order, participants_str):
-    """YAML frontmatter 생성 — tags는 message 고정, 날짜/참석자는 별도 property"""
-    dates = [clean_date_string(d) for d in date_order]
-    date_lines = "\n".join(f"  - {d}" for d in dates)
-
+def build_frontmatter(room_name, iso_date, participants_str):
+    """YAML frontmatter 생성 — tags는 message 고정, room/date/참석자는 별도 property"""
     names = [p.strip() for p in participants_str.split(',') if p.strip() and p.strip() != 'N/A']
     participant_lines = "\n".join(f"  - {n}" for n in names)
 
     return (
         f"---\n"
         f"tags:\n  - message\n"
-        f"dates:\n{date_lines}\n"
+        f"room: {room_name}\n"
+        f"date: {iso_date}\n"
         f"participants:\n{participant_lines}\n"
         f"---\n\n"
     )
 
-def export_to_merged_markdown(room_name, data):
-    """JSON 데이터를 대화방별 단일 마크다운 파일로 저장 (날짜는 ## 헤더로 구분)"""
+def export_to_daily_markdown(room_name, data):
+    """JSON 데이터를 대화방 폴더 안 날짜별 마크다운 파일로 저장"""
     meta, messages = data.get('metadata', {}), data.get('messages', [])
     if not messages:
         return
 
-    output_path = os.path.join(OUTPUT_DIR, f"{room_name}.md")
+    room_dir = os.path.join(OUTPUT_DIR, room_name)
+    os.makedirs(room_dir, exist_ok=True)
 
     date_groups = {}
     date_order = []
@@ -143,18 +142,18 @@ def export_to_merged_markdown(room_name, data):
         date_groups[d].append(m)
 
     participants = meta.get('participants', 'N/A')
-    frontmatter = build_frontmatter(date_order, participants)
-    md_content = frontmatter + f"# {room_name}\n\n- **참석자**: {participants}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
     for date_key in date_order:
         iso_date = clean_date_string(date_key)
-        md_content += f"## {date_key}\n\n"
+        frontmatter = build_frontmatter(room_name, iso_date, participants)
+        md_content = frontmatter + f"# {room_name} — {iso_date}\n\n- **참석자**: {participants}\n- **업데이트**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n---\n\n"
         for m in date_groups[date_key]:
             content = m['content']
             if content.strip().startswith('|'): content = "\n" + content
             md_content += f"**{m['sender']}** ({iso_date} {m['time']})\n{content}\n\n"
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(md_content)
+        output_path = os.path.join(room_dir, f"{iso_date}.md")
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
 
     cleanup_legacy_split_files(room_name)
 
@@ -202,8 +201,8 @@ def process_file(file_path):
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(final_data, f, ensure_ascii=False, indent=2)
             
-            # 5. 마크다운 생성 (대화방별 단일 파일, 날짜는 헤더로 구분)
-            export_to_merged_markdown(room_name, final_data)
+            # 5. 마크다운 생성 (대화방 폴더 안에 날짜별 파일로 저장)
+            export_to_daily_markdown(room_name, final_data)
             logging.info(f"  [성공] {room_name}: 신규 {added}개 추가 (총 {len(merged_messages)}개)")
             
             # 6. 처리 완료된 파일 아카이브로 이동

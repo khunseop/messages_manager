@@ -8,9 +8,10 @@ tags:
 ## 최근 업데이트된 대화방
 
 ```dataview
-TABLE participants, length(dates) + "일" AS 대화일수
+TABLE first(rows.participants) AS participants, max(rows.date) AS 최근날짜, length(rows) + "일" AS 대화일수
 FROM #message
-SORT file.mtime DESC
+GROUP BY room
+SORT max(rows.file.mtime) DESC
 LIMIT 20
 ```
 
@@ -19,9 +20,10 @@ LIMIT 20
 ## 전체 대화방 목록
 
 ```dataview
-TABLE participants, length(dates) + "일" AS 대화일수
+TABLE first(rows.participants) AS participants, length(rows) + "일" AS 대화일수
 FROM #message
-SORT file.name ASC
+GROUP BY room
+SORT room ASC
 ```
 
 ---
@@ -31,10 +33,10 @@ SORT file.name ASC
 > `"이름"` 부분을 원하는 이름으로 바꿔서 사용하세요.
 
 ```dataview
-TABLE dates, participants
+TABLE room, date
 FROM #message
 WHERE contains(participants, "이름")
-SORT file.name ASC
+SORT room ASC, date ASC
 ```
 
 ---
@@ -44,10 +46,10 @@ SORT file.name ASC
 > `"YYYY-MM-DD"` 부분을 원하는 날짜로 바꿔서 사용하세요.
 
 ```dataview
-TABLE participants
+TABLE room, participants
 FROM #message
-WHERE contains(dates, "2026-01-01")
-SORT file.name ASC
+WHERE date = "2026-01-01"
+SORT room ASC
 ```
 
 ---
@@ -57,10 +59,11 @@ SORT file.name ASC
 > `"YYYY-MM"` 부분을 원하는 연-월로 바꿔서 사용하세요.
 
 ```dataview
-TABLE participants, length(dates) + "일" AS 대화일수
+TABLE first(rows.participants) AS participants, length(rows) + "일" AS 대화일수
 FROM #message
-WHERE any(dates, (d) => startswith(d, "2026-01"))
-SORT file.name ASC
+WHERE startswith(date, "2026-01")
+GROUP BY room
+SORT room ASC
 ```
 
 ---
@@ -69,9 +72,14 @@ SORT file.name ASC
 
 ```dataviewjs
 const pages = dv.pages("#message");
-const counter = {};
+const roomParticipants = {};
 for (const p of pages) {
-    for (const name of (p.participants || [])) {
+    if (!p.room) continue;
+    roomParticipants[p.room] = p.participants || [];
+}
+const counter = {};
+for (const names of Object.values(roomParticipants)) {
+    for (const name of names) {
         counter[name] = (counter[name] || 0) + 1;
     }
 }
